@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildReplyArgs, formatReply } from '../src/reply.js';
+import { buildPostMarkdownContent, buildReplyArgs, formatReply, splitPostMarkdownContent } from '../src/reply.js';
 import { aiResult } from './helpers.js';
 
 test('formatReply renders summary and tags', () => {
@@ -25,7 +25,22 @@ test('formatReply renders high-signal structured fields', () => {
   assert.match(reply, /\*\*Entities\*\*: Doujie, Codex/);
 });
 
-test('buildReplyArgs uses configured Feishu identity', () => {
+test('buildPostMarkdownContent wraps text as Feishu post md content', () => {
+  assert.equal(
+    buildPostMarkdownContent('**hello**'),
+    JSON.stringify({ zh_cn: { content: [[{ tag: 'md', text: '**hello**' }]] } })
+  );
+});
+
+test('splitPostMarkdownContent chunks long markdown by paragraphs', () => {
+  const chunks = splitPostMarkdownContent(`## A\n\n${'a'.repeat(700)}\n\n## B\n\n${'b'.repeat(700)}`);
+
+  assert.equal(chunks.length, 2);
+  assert.match(chunks[0] ?? '', /^\(1\/2\)/);
+  assert.match(chunks[1] ?? '', /^\(2\/2\)/);
+});
+
+test('buildReplyArgs sends Feishu post content with configured identity', () => {
   const args = buildReplyArgs('msg-1', 'hello', 'user');
 
   assert.deepEqual(args, [
@@ -34,9 +49,9 @@ test('buildReplyArgs uses configured Feishu identity', () => {
     '--message-id',
     'msg-1',
     '--content',
-    JSON.stringify({ text: 'hello' }),
+    JSON.stringify({ zh_cn: { content: [[{ tag: 'md', text: 'hello' }]] } }),
     '--msg-type',
-    'text',
+    'post',
     '--as',
     'user',
   ]);

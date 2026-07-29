@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import type { AIResult, FeishuIdentity } from './types.js';
 
+const MAX_POST_MARKDOWN_CHARS = 800;
+
 export function formatReply(result: AIResult): string {
   const tagStr = result.tags.map((t) => `#${t}`).join(' ');
   const sections = [
@@ -40,6 +42,80 @@ export async function replyText(
   await sendReply(messageId, text, feishuAs);
 }
 
+export function buildPostMarkdownContent(content: string): string {
+  return JSON.stringify({
+    zh_cn: {
+      content: [
+        [
+          {
+            tag: 'md',
+            text: content || ' ',
+          },
+        ],
+      ],
+    },
+  });
+}
+
+export function splitPostMarkdownContent(content: string): string[] {
+  const normalized = content || ' ';
+  if (normalized.length <= MAX_POST_MARKDOWN_CHARS) {
+    return [normalized];
+  }
+
+  const sections = splitMarkdownSections(normalized);
+  const chunks: string[] = [];
+  let current = '';
+  for (const paragraph of sections) {
+    const separator = current ? '\n\n' : '';
+    if ((current + separator + paragraph).length <= MAX_POST_MARKDOWN_CHARS) {
+      current += separator + paragraph;
+      continue;
+    }
+    if (current) {
+      chunks.push(current);
+      current = '';
+    }
+    if (paragraph.length <= MAX_POST_MARKDOWN_CHARS) {
+      current = paragraph;
+      continue;
+    }
+    for (let index = 0; index < paragraph.length; index += MAX_POST_MARKDOWN_CHARS) {
+      chunks.push(paragraph.slice(index, index + MAX_POST_MARKDOWN_CHARS));
+    }
+  }
+  if (current) {
+    chunks.push(current);
+  }
+
+  if (chunks.length <= 1) {
+    return chunks;
+  }
+  return chunks.map((chunk, index) => `(${index + 1}/${chunks.length})\n\n${chunk}`);
+}
+
+function splitMarkdownSections(content: string): string[] {
+  const sections: string[] = [];
+  let current: string[] = [];
+  let inFence = false;
+  for (const line of content.split('\n')) {
+    if (!inFence && current.length > 0 && /^#{1,6}\s+/.test(line)) {
+      sections.push(current.join('\n').trim());
+      current = [];
+    }
+    current.push(line);
+    if (/^```/.test(line.trim())) {
+      inFence = !inFence;
+    }
+  }
+  if (current.length > 0) {
+    sections.push(current.join('\n').trim());
+  }
+  return sections
+    .flatMap((section) => section.split(/\n{2,}/).map((part) => part.trim()))
+    .filter(Boolean);
+}
+
 export function buildReplyArgs(
   messageId: string,
   content: string,
@@ -51,15 +127,26 @@ export function buildReplyArgs(
     '--message-id',
     messageId,
     '--content',
-    JSON.stringify({ text: content }),
+    buildPostMarkdownContent(content),
     '--msg-type',
-    'text',
+    'post',
     '--as',
     feishuAs,
   ];
 }
 
 async function sendReply(
+  messageId: string,
+  content: string,
+  feishuAs: FeishuIdentity
+): Promise<void> {
+  const chunks = splitPostMarkdownContent(content);
+  for (const chunk of chunks) {
+    await sendReplyChunk(messageId, chunk, feishuAs);
+  }
+}
+
+async function sendReplyChunk(
   messageId: string,
   content: string,
   feishuAs: FeishuIdentity
