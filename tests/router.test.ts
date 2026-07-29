@@ -12,12 +12,15 @@ import { Router, type CodexChatRunnerLike, type ReactionClient, type ReplyClient
 import { Store } from '../src/store.js';
 import type { AIResult, FeishuEvent, PrivacyConfig } from '../src/types.js';
 import type { ReactionEmoji } from '../src/reaction.js';
+import type { StatusCardParams } from '../src/reply.js';
 import { aiResult, createTempDbPath, removeTempDir, textEvent } from './helpers.js';
 
 type FakeReply = {
   summaries: Array<{ messageId: string; result: AIResult }>;
   errors: string[];
   texts: Array<{ messageId: string; text: string }>;
+  statusCards: Array<{ messageId: string; params: StatusCardParams }>;
+  statusUpdates: Array<{ messageId: string; params: StatusCardParams }>;
   client: ReplyClient;
 };
 
@@ -26,6 +29,8 @@ function createFakeReply(): FakeReply {
     summaries: [],
     errors: [],
     texts: [],
+    statusCards: [],
+    statusUpdates: [],
     client: {
       async replyToMessage(messageId: string, result: AIResult): Promise<void> {
         fake.summaries.push({ messageId, result });
@@ -39,6 +44,26 @@ function createFakeReply(): FakeReply {
     },
   };
   return fake;
+}
+
+function createFakeReplyWithStatusCards(): FakeReply {
+  const fake = createFakeReply();
+  fake.client.replyStatusCard = async (messageId: string, params: StatusCardParams): Promise<string | null> => {
+    fake.statusCards.push({ messageId, params });
+    return `card-${messageId}`;
+  };
+  fake.client.updateStatusCard = async (messageId: string, params: StatusCardParams): Promise<void> => {
+    fake.statusUpdates.push({ messageId, params });
+  };
+  return fake;
+}
+
+function withoutStatusCards(client: ReplyClient): ReplyClient {
+  return {
+    replyToMessage: client.replyToMessage,
+    replyError: client.replyError,
+    replyText: client.replyText,
+  };
 }
 
 type FakeReaction = {
@@ -186,7 +211,7 @@ test('Router dispatches commands through injected reply client', async () => {
     aiPipeline,
     store,
     new Set<string>(),
-    reply.client,
+    withoutStatusCards(reply.client),
     createFakeUrlFetcher('')
   );
   try {
@@ -196,6 +221,65 @@ test('Router dispatches commands through injected reply client', async () => {
     assert.equal(reply.texts[0]?.messageId, 'cmd-1');
     assert.match(reply.texts[0]?.text ?? '', /Available commands/);
     assert.equal(reply.summaries.length, 0);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router updates one status card for non-detail Codex chat when supported', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-codex-status-card');
+  const store = new Store(dbPath, () => 1110);
+  const reply = createFakeReplyWithStatusCards();
+  const reaction = createFakeReaction();
+  const codex = createFakeCodexChatRunner(['chunk one', 'chunk two']);
+  const aiPipeline = {
+    async process(_text: string): Promise<AIResult> {
+      throw new Error('AI digest should not run for /codex');
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    aiPipeline,
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    codex.runner,
+    {
+      model: 'test-model',
+      workdir: dir,
+      sandbox: 'workspace-write',
+      skipGitRepoCheck: true,
+    },
+    undefined,
+    reaction.client
+  );
+  try {
+    await router.handleEvent(textEvent({
+      messageId: 'codex-card-1',
+      text: '/codex hello',
+      senderId: 'ou_event_root',
+      senderAtEventRoot: true,
+    }));
+
+    assert.deepEqual(reply.texts, []);
+    assert.equal(reply.statusCards.length, 1);
+    assert.equal(reply.statusCards[0]?.messageId, 'codex-card-1');
+    assert.equal(reply.statusCards[0]?.params.state, 'thinking');
+    assert.equal(reply.statusUpdates.length, 1);
+    assert.equal(reply.statusUpdates[0]?.messageId, 'card-codex-card-1');
+    assert.equal(reply.statusUpdates[0]?.params.state, 'done');
+    assert.match(reply.statusUpdates[0]?.params.result ?? '', /chunk one/);
+    assert.match(reply.statusUpdates[0]?.params.result ?? '', /chunk two/);
+    assert.deepEqual(reaction.reactions, [
+      { messageId: 'codex-card-1', emojiType: 'THINKING' },
+      { messageId: 'codex-card-1', emojiType: 'DONE' },
+    ]);
   } finally {
     store.close();
     removeTempDir(dir);

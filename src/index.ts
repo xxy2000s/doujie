@@ -6,7 +6,7 @@ import { AIPipeline } from './ai/pipeline.js';
 import { AnswerPipeline } from './ai/answer-pipeline.js';
 import { Router } from './router.js';
 import { createCommandRegistry, type CommandRuntime } from './commands/index.js';
-import { replyError, replyText, replyToMessage } from './reply.js';
+import { replyError, replyStatusCard, replyText, replyToMessage, updateStatusCard, type StatusCardParams } from './reply.js';
 import { addReaction, type ReactionEmoji } from './reaction.js';
 import { DEFAULT_PRIVACY_CONFIG, redactForLog } from './privacy.js';
 import { createLarkAttachmentDownloader } from './attachments.js';
@@ -60,6 +60,10 @@ async function main(): Promise<void> {
       replyError(messageId, config.feishu.as),
     replyText: (messageId: string, text: string): Promise<void> =>
       replyText(messageId, text, config.feishu.as),
+    replyStatusCard: (messageId: string, params: StatusCardParams): Promise<string | null> =>
+      replyStatusCard(messageId, params, config.feishu.as),
+    updateStatusCard: (messageId: string, params: StatusCardParams): Promise<void> =>
+      updateStatusCard(messageId, params, config.feishu.as),
   };
   const reactionClient = {
     addReaction: (messageId: string, emojiType: ReactionEmoji): Promise<void> =>

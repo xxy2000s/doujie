@@ -8,7 +8,7 @@ import type {
   PrivacyConfig,
 } from './types.js';
 import type { Store } from './store.js';
-import { replyToMessage, replyError, replyText } from './reply.js';
+import { replyToMessage, replyError, replyText, type StatusCardParams } from './reply.js';
 import type { ReactionEmoji } from './reaction.js';
 import {
   DEFAULT_PRIVACY_CONFIG,
@@ -68,6 +68,8 @@ export type ReplyClient = {
   replyToMessage(messageId: string, result: AIResult): Promise<void>;
   replyError(messageId: string): Promise<void>;
   replyText(messageId: string, text: string): Promise<void>;
+  replyStatusCard?(messageId: string, params: StatusCardParams): Promise<string | null>;
+  updateStatusCard?(messageId: string, params: StatusCardParams): Promise<void>;
 };
 
 export type ReactionClient = {
@@ -94,6 +96,15 @@ const defaultUrlFetcher: UrlFetcher = {
 
 const defaultCodexChatRunner: CodexChatRunnerLike = {
   run: runCodexChat,
+};
+
+type CodexStatusCardHandle = {
+  messageId: string;
+  startedAt: number;
+  stop(): void;
+  markOutputStarted(): void;
+  finish(result: string, sessionId: string | null): Promise<void>;
+  fail(error: Error): Promise<void>;
 };
 
 export class Router {
@@ -709,6 +720,8 @@ export class Router {
     }
 
     let chunksSent = 0;
+    const answerChunks: string[] = [];
+    const statusCard = detailed ? null : await this.createCodexStatusCard(message.messageId);
     try {
       const result = await this.codexChatRunner.run(
         prompt,
@@ -719,7 +732,12 @@ export class Router {
         },
         async (chunk: string): Promise<void> => {
           chunksSent += 1;
-          await this.replyClient.replyText(message.messageId, chunk);
+          if (detailed || !statusCard) {
+            await this.replyClient.replyText(message.messageId, chunk);
+          } else {
+            answerChunks.push(chunk);
+            statusCard.markOutputStarted();
+          }
         }
       );
 
@@ -729,11 +747,20 @@ export class Router {
           message.messageId,
           result.sessionId ? `Codex 任务结束。session: ${result.sessionId}` : 'Codex 任务结束。'
         );
+      } else if (statusCard) {
+        await statusCard.finish(
+          chunksSent === 0 ? 'Codex 没有返回可显示内容。' : answerChunks.join('\n\n'),
+          result.sessionId
+        );
       } else if (chunksSent === 0) {
         await this.replyClient.replyText(message.messageId, 'Codex 没有返回可显示内容。');
       }
       await this.addStatusReaction(message.messageId, 'DONE');
     } catch (err) {
+      statusCard?.stop();
+      await statusCard?.fail(err as Error).catch((cardErr: Error) => {
+        console.error('[router] Failed to update status card after error:', cardErr.message);
+      });
       await this.addStatusReaction(message.messageId, 'ERROR');
       throw err;
     }
@@ -743,6 +770,92 @@ export class Router {
   private getCodexSessionKey(message: MessageContent): string {
     if (this.isGroupChat(message.chatType)) return message.chatId;
     return `${message.chatId}:${message.senderId}`;
+  }
+
+  private async createCodexStatusCard(messageId: string): Promise<CodexStatusCardHandle | null> {
+    if (!this.replyClient.replyStatusCard || !this.replyClient.updateStatusCard) {
+      return null;
+    }
+
+    const startedAt = Date.now();
+    let dots = 1;
+    let stage = '启动 Codex session';
+    let stopped = false;
+    let updateInFlight = false;
+    const buildParams = (): StatusCardParams => ({
+      state: stage === '整理输出' ? 'working' : 'thinking',
+      stage,
+      elapsedMs: Date.now() - startedAt,
+      dots,
+      detail: '豆姐正在调度本地 Agent，完成后会在这条卡片里更新结果。',
+    });
+
+    let statusMessageId: string | null = null;
+    try {
+      statusMessageId = await this.replyClient.replyStatusCard(messageId, buildParams());
+    } catch (err) {
+      console.error('[router] Failed to send status card:', (err as Error).message);
+      return null;
+    }
+    if (!statusMessageId) {
+      console.error('[router] Status card reply did not return message_id');
+      return null;
+    }
+    const updateStatusCard = this.replyClient.updateStatusCard;
+
+    const update = async (): Promise<void> => {
+      if (stopped || updateInFlight || !updateStatusCard) return;
+      dots = dots >= 3 ? 1 : dots + 1;
+      updateInFlight = true;
+      try {
+        await updateStatusCard(statusMessageId, buildParams());
+      } catch (err) {
+        console.error('[router] Failed to update status card:', (err as Error).message);
+      } finally {
+        updateInFlight = false;
+      }
+    };
+    const timer = setInterval(() => {
+      update().catch((err: Error) => {
+        console.error('[router] Failed to schedule status card update:', err.message);
+      });
+    }, 2000);
+    const stop = (): void => {
+      stopped = true;
+      clearInterval(timer);
+    };
+
+    return {
+      messageId: statusMessageId,
+      startedAt,
+      stop,
+      markOutputStarted(): void {
+        stage = '整理输出';
+      },
+      async finish(result: string, sessionId: string | null): Promise<void> {
+        stop();
+        if (!updateStatusCard) return;
+        await updateStatusCard(statusMessageId, {
+          state: 'done',
+          title: '豆姐完成了',
+          stage: '已生成最终结果',
+          elapsedMs: Date.now() - startedAt,
+          sessionId,
+          result,
+        });
+      },
+      async fail(error: Error): Promise<void> {
+        stop();
+        if (!updateStatusCard) return;
+        await updateStatusCard(statusMessageId, {
+          state: 'error',
+          title: '豆姐处理失败',
+          stage: 'Agent 执行失败',
+          elapsedMs: Date.now() - startedAt,
+          detail: error.message,
+        });
+      },
+    };
   }
 
   private async addStatusReaction(messageId: string, emojiType: ReactionEmoji): Promise<void> {

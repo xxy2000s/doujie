@@ -2,6 +2,20 @@ import { spawn } from 'node:child_process';
 import type { AIResult, FeishuIdentity } from './types.js';
 
 const MAX_POST_MARKDOWN_CHARS = 800;
+const MAX_CARD_MARKDOWN_CHARS = 5500;
+
+export type StatusCardState = 'thinking' | 'working' | 'done' | 'error';
+
+export type StatusCardParams = {
+  state: StatusCardState;
+  title?: string;
+  stage: string;
+  detail?: string;
+  elapsedMs?: number;
+  dots?: number;
+  result?: string;
+  sessionId?: string | null;
+};
 
 export function formatReply(result: AIResult): string {
   const tagStr = result.tags.map((t) => `#${t}`).join(' ');
@@ -42,6 +56,23 @@ export async function replyText(
   await sendReply(messageId, text, feishuAs);
 }
 
+export async function replyStatusCard(
+  messageId: string,
+  params: StatusCardParams,
+  feishuAs: FeishuIdentity = 'bot'
+): Promise<string | null> {
+  const stdout = await spawnLarkCli(buildStatusCardReplyArgs(messageId, params, feishuAs));
+  return extractMessageId(stdout);
+}
+
+export async function updateStatusCard(
+  messageId: string,
+  params: StatusCardParams,
+  feishuAs: FeishuIdentity = 'bot'
+): Promise<void> {
+  await spawnLarkCli(buildStatusCardPatchArgs(messageId, params, feishuAs));
+}
+
 export function buildPostMarkdownContent(content: string): string {
   return JSON.stringify({
     zh_cn: {
@@ -55,6 +86,79 @@ export function buildPostMarkdownContent(content: string): string {
       ],
     },
   });
+}
+
+export function buildStatusCard(params: StatusCardParams): Record<string, unknown> {
+  const stateLabel = statusLabel(params.state);
+  const dots = params.state === 'thinking' || params.state === 'working'
+    ? '.'.repeat(Math.max(1, Math.min(params.dots ?? 3, 3)))
+    : '';
+  const title = params.title ?? (params.state === 'done' ? '豆姐完成了' : `豆姐${stateLabel}${dots}`);
+  const elapsed = params.elapsedMs === undefined ? '' : `\n**已用时：** ${formatElapsed(params.elapsedMs)}`;
+  const session = params.sessionId ? `\n**Session：** \`${params.sessionId}\`` : '';
+  const detail = params.detail ? `\n**详情：** ${params.detail}` : '';
+  const result = params.result
+    ? `\n\n---\n${truncateCardMarkdown(params.result)}`
+    : '';
+
+  return {
+    config: {
+      wide_screen_mode: true,
+      enable_forward: true,
+      update_multi: true,
+    },
+    header: {
+      template: statusTemplate(params.state),
+      title: {
+        tag: 'plain_text',
+        content: title,
+      },
+    },
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**状态：** ${stateLabel}${dots}\n**阶段：** ${params.stage}${elapsed}${session}${detail}${result}`,
+        },
+      },
+    ],
+  };
+}
+
+export function buildStatusCardReplyArgs(
+  messageId: string,
+  params: StatusCardParams,
+  feishuAs: FeishuIdentity
+): string[] {
+  return [
+    'im',
+    '+messages-reply',
+    '--message-id',
+    messageId,
+    '--content',
+    JSON.stringify(buildStatusCard(params)),
+    '--msg-type',
+    'interactive',
+    '--as',
+    feishuAs,
+  ];
+}
+
+export function buildStatusCardPatchArgs(
+  messageId: string,
+  params: StatusCardParams,
+  feishuAs: FeishuIdentity
+): string[] {
+  return [
+    'api',
+    'PATCH',
+    `/open-apis/im/v1/messages/${messageId}`,
+    '--data',
+    JSON.stringify({ content: JSON.stringify(buildStatusCard(params)) }),
+    '--as',
+    feishuAs,
+  ];
 }
 
 export function splitPostMarkdownContent(content: string): string[] {
@@ -182,4 +286,67 @@ async function sendReplyChunk(
       reject(err);
     });
   });
+}
+
+async function spawnLarkCli(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('lark-cli', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    proc.on('close', (code: number | null) => {
+      if (code === 0) {
+        resolve(stdout);
+      } else {
+        reject(new Error(`lark-cli exited with code ${code}: ${stderr || stdout}`));
+      }
+    });
+
+    proc.on('error', reject);
+  });
+}
+
+function extractMessageId(stdout: string): string | null {
+  try {
+    const parsed = JSON.parse(stdout) as { data?: { message_id?: unknown } };
+    return typeof parsed.data?.message_id === 'string' ? parsed.data.message_id : null;
+  } catch {
+    return null;
+  }
+}
+
+function statusLabel(state: StatusCardState): string {
+  if (state === 'done') return '已完成';
+  if (state === 'error') return '失败';
+  if (state === 'working') return '处理中';
+  return '思考中';
+}
+
+function statusTemplate(state: StatusCardState): string {
+  if (state === 'done') return 'green';
+  if (state === 'error') return 'red';
+  if (state === 'working') return 'blue';
+  return 'wathet';
+}
+
+function formatElapsed(elapsedMs: number): string {
+  const seconds = Math.max(0, Math.round(elapsedMs / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function truncateCardMarkdown(markdown: string): string {
+  if (markdown.length <= MAX_CARD_MARKDOWN_CHARS) return markdown;
+  return `${markdown.slice(0, MAX_CARD_MARKDOWN_CHARS)}\n\n...结果过长，已截断显示。`;
 }
