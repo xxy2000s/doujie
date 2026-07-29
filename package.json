@@ -1,0 +1,31 @@
+{
+  "name": "doujie",
+  "version": "0.1.0",
+  "description": "Doujie local computer control-plane daemon",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "web": "tsx src/web/index.ts",
+    "test": "tsx --test tests/*.test.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.2",
+    "cheerio": "^1.2.0",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  }
+}
