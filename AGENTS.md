@@ -4,13 +4,13 @@ This file is for AI agents working on Doujie.
 
 ## Mission
 
-Doujie is the user's Feishu-facing local computer control plane. It is the single "豆姐" entrypoint for managing the user's local computer and coordinating other agents. Do not treat Doujie as a project-specific coding worker.
+Doujie is the user's digital employee. It is the single "豆姐" Feishu entrypoint for supervising, resuming, and coordinating local/project agents on the user's computer. Do not treat Doujie as a project-specific coding worker.
 
 Correct mental model:
 
 ```text
-Doujie = Feishu entrypoint + local control plane + Codex session bridge + memory/search module
-Project agents = separate workers that Doujie should dispatch or resume explicitly
+Doujie = digital employee + Feishu entrypoint + agent control plane + Codex session bridge + memory/search module
+Project agents = separate workers that Doujie dispatches, resumes, or audits explicitly
 ```
 
 ## Non-Negotiable Runtime Facts

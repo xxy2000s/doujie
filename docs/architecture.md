@@ -2,15 +2,15 @@
 
 ## Product Boundary
 
-Doujie is a local control-plane daemon for one user. The user talks to 豆姐 through Feishu, and Doujie bridges those messages to local tools, Codex CLI sessions, local memory, and future project agents.
+Doujie is the user's digital employee. The user talks to 豆姐 through Feishu, and Doujie turns those chat instructions into local agent control: route work to Codex CLI sessions, resume prior sessions, track what happened, and prepare for dispatching work to project-specific agents.
 
-Doujie should not be coupled to any specific project directory. Its own working directory is the control-plane project:
+Doujie should not be coupled to any specific project directory. Her own working directory is the control-plane project:
 
 ```text
 ~/service/doujie
 ```
 
-Future project work should be dispatched through an explicit project/agent registry rather than by changing Doujie's default workdir per Feishu group.
+Project work should be dispatched through an explicit project/agent registry rather than by changing Doujie's default workdir per Feishu group.
 
 ## Runtime Flow
 

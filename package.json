@@ -1,7 +1,7 @@
 {
   "name": "doujie",
   "version": "0.1.0",
-  "description": "Doujie local computer control-plane daemon",
+  "description": "Doujie digital employee and local agent control plane",
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",

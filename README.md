@@ -1,17 +1,18 @@
 # Doujie
 
-Doujie is a personal local-control daemon for the Feishu bot named "豆姐". It lets the user talk to a Mac from Feishu, route messages into local Codex CLI sessions, keep per-chat session state, search saved messages, and run service operations without opening a terminal.
+Doujie is the user's digital employee behind the Feishu bot named "豆姐". Its primary job is to act as the operator-facing control point for local and project agents: receive instructions in Feishu, route work into Codex CLI sessions, keep session state, and make agent work observable from chat.
 
 Read this first:
 
-- Audience: one operator who wants a Feishu entrypoint into their own computer.
-- Runtime: a local Node.js daemon managed by launchd.
+- Product role: a digital employee for supervising, resuming, and coordinating agents.
+- Audience: one operator who wants to manage local/project agents through Feishu.
+- Runtime shape: a local Node.js daemon managed by launchd.
 - Input: Feishu/Lark IM events from `lark-cli event +subscribe`.
 - Output: Feishu replies and reactions.
-- Agent bridge: normal messages go to Codex chat by default; `/detail` shows verbose Codex events.
+- Agent bridge: normal messages go to Codex chat by default; `/detail` shows verbose Codex events for inspection.
 - Session model: private chats use `chatId:senderId`; group chats use `chatId`; `/new` starts a fresh Codex binding.
 - State: config and runtime data live under `~/.doujie`; build artifacts and local data are not committed.
-- Boundary: Doujie is a control plane, not a project-specific coding worker. Future project work should be dispatched through explicit project/agent metadata.
+- Boundary: Doujie is not a project-specific coding worker. It should control, resume, and dispatch other agents through explicit project/agent metadata.
 
 ## Current Runtime
 
@@ -34,6 +35,7 @@ Read this first:
 - Adds Feishu reactions for Codex status: thinking, done, error.
 - Tracks per-chat Codex sessions in `~/.doujie/codex-sessions.json`.
 - Maintains a readable session registry and jsonl links in `~/.doujie/sessions/`.
+- Provides the base for a project/agent registry so 豆姐 can dispatch work to named agents instead of doing every task in her own control session.
 - Provides message search, recent history, digest, Q&A, backup, export, cleanup, and a read-only local memory web UI.
 
 ## Commands
