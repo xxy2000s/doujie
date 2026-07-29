@@ -7,7 +7,7 @@ import { createAttachmentExtractor } from '../src/attachment-extractor.js';
 import type { AttachmentRecord } from '../src/store.js';
 
 function tempFile(name: string, content = ''): { dir: string; filePath: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'infohunter-attachment-extractor-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doujie-attachment-extractor-'));
   const filePath = path.join(dir, name);
   fs.writeFileSync(filePath, content, 'utf-8');
   return { dir, filePath };

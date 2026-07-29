@@ -26,7 +26,7 @@ function seedMessage(store: Store, id: string, now: number, tag: string): void {
 }
 
 test('createVerifiedBackup writes an integrity-checked sqlite backup', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-backup');
+  const { dir, dbPath } = createTempDbPath('doujie-backup');
   const store = new Store(dbPath, () => 1000, { disableFts: true });
   try {
     seedMessage(store, 'backup-1', 1000, '备份');
@@ -42,7 +42,7 @@ test('createVerifiedBackup writes an integrity-checked sqlite backup', async () 
 });
 
 test('exportMessages writes jsonl and markdown files with filters', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-export');
+  const { dir, dbPath } = createTempDbPath('doujie-export');
   const store = new Store(dbPath, () => Date.parse('2026-03-01T12:00:00.000Z'), { disableFts: true });
   try {
     seedMessage(store, 'export-1', Date.parse('2026-03-01T12:00:00.000Z'), '技术');
@@ -64,7 +64,7 @@ test('exportMessages writes jsonl and markdown files with filters', () => {
 
 test('cleanupOldMessages supports dry-run and run modes', () => {
   let now = Date.parse('2026-04-01T00:00:00.000Z');
-  const { dir, dbPath } = createTempDbPath('infohunter-cleanup');
+  const { dir, dbPath } = createTempDbPath('doujie-cleanup');
   const store = new Store(dbPath, () => now, { disableFts: true });
   try {
     seedMessage(store, 'old-1', now, '旧');

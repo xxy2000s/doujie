@@ -173,7 +173,7 @@ function createFakeCodexChatRunner(chunks: string[]): FakeCodexChatRunner {
 }
 
 test('Router dispatches commands through injected reply client', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-command');
+  const { dir, dbPath } = createTempDbPath('doujie-router-command');
   const store = new Store(dbPath, () => 1000);
   const reply = createFakeReply();
   const aiPipeline = {
@@ -203,7 +203,7 @@ test('Router dispatches commands through injected reply client', async () => {
 });
 
 test('Router handles /codex as a streaming Codex chat command', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-codex');
+  const { dir, dbPath } = createTempDbPath('doujie-router-codex');
   const store = new Store(dbPath, () => 1100);
   const reply = createFakeReply();
   const reaction = createFakeReaction();
@@ -260,7 +260,7 @@ test('Router handles /codex as a streaming Codex chat command', async () => {
 });
 
 test('Router handles /detail as a verbose Codex chat command', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-detail');
+  const { dir, dbPath } = createTempDbPath('doujie-router-detail');
   const store = new Store(dbPath, () => 1120);
   const reply = createFakeReply();
   const codex = createFakeCodexChatRunner(['[thread] started session-1', '[turn] started', 'chunk one']);
@@ -314,7 +314,7 @@ test('Router handles /detail as a verbose Codex chat command', async () => {
 });
 
 test('Router handles /new by clearing the current Codex session binding', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-new');
+  const { dir, dbPath } = createTempDbPath('doujie-router-new');
   const store = new Store(dbPath, () => 1130);
   const reply = createFakeReply();
   const codex = createFakeCodexChatRunner(['should not run']);
@@ -372,7 +372,7 @@ test('Router handles /new by clearing the current Codex session binding', async 
 });
 
 test('Router can route normal messages to Codex chat by default', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-default-codex');
+  const { dir, dbPath } = createTempDbPath('doujie-router-default-codex');
   const store = new Store(dbPath, () => 1150);
   const reply = createFakeReply();
   const codex = createFakeCodexChatRunner(['codex default reply']);
@@ -421,7 +421,7 @@ test('Router can route normal messages to Codex chat by default', async () => {
 });
 
 test('Router stores group messages without bot mention but does not process them', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-group-no-mention');
+  const { dir, dbPath } = createTempDbPath('doujie-router-group-no-mention');
   const store = new Store(dbPath, () => 1170);
   const reply = createFakeReply();
   const reaction = createFakeReaction();
@@ -451,7 +451,7 @@ test('Router stores group messages without bot mention but does not process them
     },
     'codex_chat',
     reaction.client,
-    { ids: ['cli_bot'], names: ['InfoHunter'] }
+    { ids: ['cli_bot'], names: ['Doujie'] }
   );
   try {
     await router.handleEvent(textEvent({
@@ -473,7 +473,7 @@ test('Router stores group messages without bot mention but does not process them
 });
 
 test('Router processes group messages that mention the bot with a group-scoped Codex session', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-group-mention');
+  const { dir, dbPath } = createTempDbPath('doujie-router-group-mention');
   const store = new Store(dbPath, () => 1180);
   const reply = createFakeReply();
   const reaction = createFakeReaction();
@@ -503,15 +503,15 @@ test('Router processes group messages that mention the bot with a group-scoped C
     },
     'codex_chat',
     reaction.client,
-    { ids: ['cli_bot'], names: ['InfoHunter'] }
+    { ids: ['cli_bot'], names: ['Doujie'] }
   );
   try {
     await router.handleEvent(textEvent({
       messageId: 'group-mention-1',
-      text: '@InfoHunter 请回复群聊 OK',
+      text: '@Doujie 请回复群聊 OK',
       chatId: 'oc_group',
       chatType: 'group',
-      mentions: [{ key: '@InfoHunter', name: 'InfoHunter', id: { app_id: 'cli_bot' } }],
+      mentions: [{ key: '@Doujie', name: 'Doujie', id: { app_id: 'cli_bot' } }],
     }));
 
     assert.deepEqual(codex.prompts, ['请回复群聊 OK']);
@@ -529,7 +529,7 @@ test('Router processes group messages that mention the bot with a group-scoped C
 });
 
 test('Router processes normal messages with fetched URL content', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-default');
+  const { dir, dbPath } = createTempDbPath('doujie-router-default');
   const store = new Store(dbPath, () => 2000);
   const reply = createFakeReply();
   const aiInputs: string[] = [];
@@ -573,7 +573,7 @@ test('Router processes normal messages with fetched URL content', async () => {
 });
 
 test('Router persists URL source metadata for successful and failed fetches', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-sources');
+  const { dir, dbPath } = createTempDbPath('doujie-router-sources');
   const store = new Store(dbPath, () => 2500);
   const reply = createFakeReply();
   const aiInputs: string[] = [];
@@ -637,7 +637,7 @@ test('Router persists URL source metadata for successful and failed fetches', as
 });
 
 test('Router suppresses duplicate messages before AI and reply side effects', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-dedupe');
+  const { dir, dbPath } = createTempDbPath('doujie-router-dedupe');
   const store = new Store(dbPath, () => 3000);
   const reply = createFakeReply();
   let aiCalls = 0;
@@ -670,7 +670,7 @@ test('Router suppresses duplicate messages before AI and reply side effects', as
 });
 
 test('Router sends error reply when AI processing fails', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-error');
+  const { dir, dbPath } = createTempDbPath('doujie-router-error');
   const store = new Store(dbPath, () => 4000);
   const reply = createFakeReply();
   const aiPipeline = {
@@ -703,7 +703,7 @@ test('Router sends error reply when AI processing fails', async () => {
 });
 
 test('Router retries a failed message using the stored raw event', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-retry');
+  const { dir, dbPath } = createTempDbPath('doujie-router-retry');
   const store = new Store(dbPath, () => 5000);
   const reply = createFakeReply();
   let aiCalls = 0;
@@ -743,7 +743,7 @@ test('Router retries a failed message using the stored raw event', async () => {
 });
 
 test('Router rejects retry for an already successful message', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-retry-reject');
+  const { dir, dbPath } = createTempDbPath('doujie-router-retry-reject');
   const store = new Store(dbPath, () => 6000);
   const reply = createFakeReply();
   let aiCalls = 0;
@@ -776,7 +776,7 @@ test('Router rejects retry for an already successful message', async () => {
 });
 
 test('Router save command stores text without AI processing', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-save');
+  const { dir, dbPath } = createTempDbPath('doujie-router-save');
   const store = new Store(dbPath, () => 7000);
   const reply = createFakeReply();
   let aiCalls = 0;
@@ -811,7 +811,7 @@ test('Router save command stores text without AI processing', async () => {
 });
 
 test('Router digest command runs AI on provided text', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-digest');
+  const { dir, dbPath } = createTempDbPath('doujie-router-digest');
   const store = new Store(dbPath, () => 8000);
   const reply = createFakeReply();
   const aiInputs: string[] = [];
@@ -847,7 +847,7 @@ test('Router digest command runs AI on provided text', async () => {
 });
 
 test('Router skip command records skipped mode without AI processing', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-skip');
+  const { dir, dbPath } = createTempDbPath('doujie-router-skip');
   const store = new Store(dbPath, () => 9000);
   const reply = createFakeReply();
   let aiCalls = 0;
@@ -881,7 +881,7 @@ test('Router skip command records skipped mode without AI processing', async () 
 });
 
 test('Router redo command refreshes processed result without duplicate target reply', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-redo');
+  const { dir, dbPath } = createTempDbPath('doujie-router-redo');
   const store = new Store(dbPath, () => 10000);
   const reply = createFakeReply();
   let aiCalls = 0;
@@ -927,7 +927,7 @@ test('Router redo command refreshes processed result without duplicate target re
 });
 
 test('Router retag command updates processed tags without running AI', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-retag');
+  const { dir, dbPath } = createTempDbPath('doujie-router-retag');
   const store = new Store(dbPath, () => 11000, { disableFts: true });
   const reply = createFakeReply();
   let aiCalls = 0;
@@ -961,7 +961,7 @@ test('Router retag command updates processed tags without running AI', async () 
 });
 
 test('Router merge-tag command records alias and rewrites existing tags', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-merge-tag');
+  const { dir, dbPath } = createTempDbPath('doujie-router-merge-tag');
   const store = new Store(dbPath, () => 12000, { disableFts: true });
   const reply = createFakeReply();
   const aiPipeline = {
@@ -1007,7 +1007,7 @@ test('Router merge-tag command records alias and rewrites existing tags', async 
 });
 
 test('Router ask command answers with stored message citations', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-ask');
+  const { dir, dbPath } = createTempDbPath('doujie-router-ask');
   const store = new Store(dbPath, () => 12500, { disableFts: true });
   const reply = createFakeReply();
   const fakeAnswer = createFakeAnswerPipeline({
@@ -1064,7 +1064,7 @@ test('Router ask command answers with stored message citations', async () => {
 });
 
 test('Router ask command refuses to answer when no evidence is found', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-ask-empty');
+  const { dir, dbPath } = createTempDbPath('doujie-router-ask-empty');
   const store = new Store(dbPath, () => 12600, { disableFts: true });
   const reply = createFakeReply();
   const fakeAnswer = createFakeAnswerPipeline({ answer: 'should not run', citations: [] });
@@ -1099,7 +1099,7 @@ test('Router ask command refuses to answer when no evidence is found', async () 
 });
 
 test('Router ask command applies privacy skip rules to evidence context', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-ask-privacy-skip');
+  const { dir, dbPath } = createTempDbPath('doujie-router-ask-privacy-skip');
   const store = new Store(dbPath, () => 12700, { disableFts: true });
   const reply = createFakeReply();
   const fakeAnswer = createFakeAnswerPipeline({ answer: 'should not run', citations: [] });
@@ -1151,7 +1151,7 @@ test('Router ask command applies privacy skip rules to evidence context', async 
 });
 
 test('Router ask command redacts evidence context before QA processing', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-ask-privacy-redact');
+  const { dir, dbPath } = createTempDbPath('doujie-router-ask-privacy-redact');
   const store = new Store(dbPath, () => 12800, { disableFts: true });
   const reply = createFakeReply();
   const fakeAnswer = createFakeAnswerPipeline({ answer: 'Redacted answer.', citations: ['ask-redact-target'] });
@@ -1203,7 +1203,7 @@ test('Router ask command redacts evidence context before QA processing', async (
 });
 
 test('Router injects frequent tag and alias hints into digest input', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-tag-context');
+  const { dir, dbPath } = createTempDbPath('doujie-router-tag-context');
   const store = new Store(dbPath, () => 13000, { disableFts: true });
   const reply = createFakeReply();
   const aiInputs: string[] = [];
@@ -1252,7 +1252,7 @@ test('Router injects frequent tag and alias hints into digest input', async () =
 });
 
 test('Router skips denylisted users before AI and stores only a privacy placeholder', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-privacy-deny');
+  const { dir, dbPath } = createTempDbPath('doujie-router-privacy-deny');
   const store = new Store(dbPath, () => 14000, { disableFts: true });
   const reply = createFakeReply();
   let aiCalls = 0;
@@ -1298,7 +1298,7 @@ test('Router skips denylisted users before AI and stores only a privacy placehol
 });
 
 test('Router redacts configured patterns before storage and AI', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-privacy-redact');
+  const { dir, dbPath } = createTempDbPath('doujie-router-privacy-redact');
   const store = new Store(dbPath, () => 15000, { disableFts: true });
   const reply = createFakeReply();
   const aiInputs: string[] = [];
@@ -1341,7 +1341,7 @@ test('Router redacts configured patterns before storage and AI', async () => {
 });
 
 test('Router skips after fetched URL content triggers a privacy rule', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-privacy-fetch-skip');
+  const { dir, dbPath } = createTempDbPath('doujie-router-privacy-fetch-skip');
   const store = new Store(dbPath, () => 16000, { disableFts: true });
   const reply = createFakeReply();
   let aiCalls = 0;
@@ -1384,7 +1384,7 @@ test('Router skips after fetched URL content triggers a privacy rule', async () 
 });
 
 test('Router downloads image attachments and records metadata', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-attachment-success');
+  const { dir, dbPath } = createTempDbPath('doujie-router-attachment-success');
   const store = new Store(dbPath, () => 17000, { disableFts: true });
   const reply = createFakeReply();
   const aiPipeline = {
@@ -1426,7 +1426,7 @@ test('Router downloads image attachments and records metadata', async () => {
 });
 
 test('Router extracts downloaded attachment text and appends it to AI input', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-attachment-extract');
+  const { dir, dbPath } = createTempDbPath('doujie-router-attachment-extract');
   const store = new Store(dbPath, () => 17500, { disableFts: true });
   const reply = createFakeReply();
   const aiInputs: string[] = [];
@@ -1471,7 +1471,7 @@ test('Router extracts downloaded attachment text and appends it to AI input', as
 });
 
 test('Router persists attachment extraction failures without failing processing', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-attachment-extract-fail');
+  const { dir, dbPath } = createTempDbPath('doujie-router-attachment-extract-fail');
   const store = new Store(dbPath, () => 17600, { disableFts: true });
   const reply = createFakeReply();
   const aiPipeline = {
@@ -1517,7 +1517,7 @@ test('Router persists attachment extraction failures without failing processing'
 });
 
 test('Router records failed file attachment downloads without failing processing', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-router-attachment-fail');
+  const { dir, dbPath } = createTempDbPath('doujie-router-attachment-fail');
   const store = new Store(dbPath, () => 18000, { disableFts: true });
   const reply = createFakeReply();
   const aiPipeline = {

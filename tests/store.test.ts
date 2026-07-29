@@ -57,7 +57,7 @@ function createMvpDatabase(dbPath: string): void {
 }
 
 test('Store saves messages with deterministic timestamps and skips duplicates', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-store');
+  const { dir, dbPath } = createTempDbPath('doujie-store');
   const store = new Store(dbPath, () => 123456);
   try {
     const first = store.saveMessage({
@@ -102,7 +102,7 @@ test('Store saves messages with deterministic timestamps and skips duplicates', 
 });
 
 test('Store initializes an empty database with current schema version', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-migration-empty');
+  const { dir, dbPath } = createTempDbPath('doujie-migration-empty');
   const store = new Store(dbPath, () => 7000);
   try {
     assert.equal(readUserVersion(dbPath), CURRENT_SCHEMA_VERSION);
@@ -124,7 +124,7 @@ test('Store initializes an empty database with current schema version', () => {
 });
 
 test('Store upgrades an existing MVP database without dropping data', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-migration-legacy');
+  const { dir, dbPath } = createTempDbPath('doujie-migration-legacy');
   createMvpDatabase(dbPath);
   const store = new Store(dbPath, () => 8000);
   try {
@@ -148,7 +148,7 @@ test('Store upgrades an existing MVP database without dropping data', () => {
 });
 
 test('Store does not rerun migrations on repeated startup', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-migration-idempotent');
+  const { dir, dbPath } = createTempDbPath('doujie-migration-idempotent');
   const firstStore = new Store(dbPath, () => 9000);
   firstStore.close();
 
@@ -174,7 +174,7 @@ test('Store does not rerun migrations on repeated startup', () => {
 
 test('Store tracks processing job state transitions', () => {
   let now = 12000;
-  const { dir, dbPath } = createTempDbPath('infohunter-processing-jobs');
+  const { dir, dbPath } = createTempDbPath('doujie-processing-jobs');
   const store = new Store(dbPath, () => now);
   try {
     store.saveMessage({
@@ -214,7 +214,7 @@ test('Store tracks processing job state transitions', () => {
 
 test('Store prepares redo for completed jobs and blocks active jobs', () => {
   let now = 13000;
-  const { dir, dbPath } = createTempDbPath('infohunter-processing-redo');
+  const { dir, dbPath } = createTempDbPath('doujie-processing-redo');
   const store = new Store(dbPath, () => now);
   try {
     store.saveMessage({
@@ -242,7 +242,7 @@ test('Store prepares redo for completed jobs and blocks active jobs', () => {
 });
 
 test('Store surfaces migration audit table failures', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-migration-failure');
+  const { dir, dbPath } = createTempDbPath('doujie-migration-failure');
   const db = new Database(dbPath);
   try {
     db.exec('CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);');
@@ -258,7 +258,7 @@ test('Store surfaces migration audit table failures', () => {
 });
 
 test('Store saves processed results and returns them in search', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-processed');
+  const { dir, dbPath } = createTempDbPath('doujie-processed');
   const store = new Store(dbPath, () => 5000);
   try {
     store.saveMessage({
@@ -302,7 +302,7 @@ test('Store saves processed results and returns them in search', () => {
 
 test('Store deduplicates sources and links them to messages', () => {
   let now = 15000;
-  const { dir, dbPath } = createTempDbPath('infohunter-sources');
+  const { dir, dbPath } = createTempDbPath('doujie-sources');
   const store = new Store(dbPath, () => now);
   try {
     for (const id of ['source-msg-1', 'source-msg-2']) {
@@ -366,7 +366,7 @@ test('Store deduplicates sources and links them to messages', () => {
 });
 
 test('Store persists attachment extraction status and extracted text', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-attachment-extraction');
+  const { dir, dbPath } = createTempDbPath('doujie-attachment-extraction');
   const store = new Store(dbPath, () => 15500, { disableFts: true });
   try {
     store.saveMessage({
@@ -408,7 +408,7 @@ test('Store persists attachment extraction status and extracted text', () => {
 });
 
 test('Store searches processed summaries through FTS when available', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-fts-summary');
+  const { dir, dbPath } = createTempDbPath('doujie-fts-summary');
   const store = new Store(dbPath, () => 16000);
   try {
     store.saveMessage({
@@ -440,7 +440,7 @@ test('Store searches processed summaries through FTS when available', () => {
 });
 
 test('Store searches structured action items and entities', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-structured-search');
+  const { dir, dbPath } = createTempDbPath('doujie-structured-search');
   const store = new Store(dbPath, () => 16500);
   try {
     store.saveMessage({
@@ -458,7 +458,7 @@ test('Store searches structured action items and entities', () => {
       tags: ['待办'],
       keyPoints: ['无关事实'],
       actionItems: ['prepare launch checklist'],
-      entities: ['InfoHunter'],
+      entities: ['Doujie'],
       sourceType: 'article',
       confidence: 0.88,
       schemaVersion: 2,
@@ -466,7 +466,7 @@ test('Store searches structured action items and entities', () => {
     });
 
     assert.equal(store.searchMessages('launch')[0]?.id, 'structured-1');
-    assert.equal(store.searchMessages('InfoHunter')[0]?.id, 'structured-1');
+    assert.equal(store.searchMessages('Doujie')[0]?.id, 'structured-1');
   } finally {
     store.close();
     removeTempDir(dir);
@@ -474,7 +474,7 @@ test('Store searches structured action items and entities', () => {
 });
 
 test('Store falls back to LIKE for Chinese search fixtures', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-fts-chinese');
+  const { dir, dbPath } = createTempDbPath('doujie-fts-chinese');
   const store = new Store(dbPath, () => 17000);
   try {
     store.saveMessage({
@@ -496,7 +496,7 @@ test('Store falls back to LIKE for Chinese search fixtures', () => {
 });
 
 test('Store can disable FTS and use LIKE fallback with diagnostics', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-fts-disabled');
+  const { dir, dbPath } = createTempDbPath('doujie-fts-disabled');
   const store = new Store(dbPath, () => 18000, { disableFts: true });
   try {
     store.saveMessage({
@@ -529,7 +529,7 @@ test('Store can disable FTS and use LIKE fallback with diagnostics', () => {
 
 test('Store search combines tag date source and limit filters', () => {
   let now = Date.parse('2026-01-02T12:00:00.000Z');
-  const { dir, dbPath } = createTempDbPath('infohunter-search-filters');
+  const { dir, dbPath } = createTempDbPath('doujie-search-filters');
   const store = new Store(dbPath, () => now, { disableFts: true });
   try {
     for (const row of [
@@ -583,7 +583,7 @@ test('Store search combines tag date source and limit filters', () => {
 });
 
 test('Store retags a processed message and records feedback', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-retag');
+  const { dir, dbPath } = createTempDbPath('doujie-retag');
   const store = new Store(dbPath, () => 19000, { disableFts: true });
   try {
     store.saveMessage({
@@ -621,7 +621,7 @@ test('Store retags a processed message and records feedback', () => {
 });
 
 test('Store merges tag aliases and search resolves alias or canonical tag', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-merge-tag');
+  const { dir, dbPath } = createTempDbPath('doujie-merge-tag');
   const store = new Store(dbPath, () => 20000, { disableFts: true });
   try {
     for (const row of [
@@ -659,7 +659,7 @@ test('Store merges tag aliases and search resolves alias or canonical tag', () =
 });
 
 test('Store builds compact tag prompt context from frequent tags and aliases', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-tag-context');
+  const { dir, dbPath } = createTempDbPath('doujie-tag-context');
   const store = new Store(dbPath, () => 21000, { disableFts: true });
   try {
     for (const row of [

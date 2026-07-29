@@ -1,8 +1,17 @@
 # Doujie
 
-Doujie is the local computer control-plane daemon behind the Feishu bot named "豆姐". It receives Feishu messages, routes commands, runs local Codex CLI turns, tracks Codex sessions, and keeps a local memory/search database.
+Doujie is a personal local-control daemon for the Feishu bot named "豆姐". It lets the user talk to a Mac from Feishu, route messages into local Codex CLI sessions, keep per-chat session state, search saved messages, and run service operations without opening a terminal.
 
-The key design point: Doujie is the user's control-plane employee, not a project-specific worker. It should stay in this repository and dispatch or resume project agents by explicit session/project metadata. The older InfoHunter behavior now lives here as memory/search/digest capability, not as the product identity.
+Read this first:
+
+- Audience: one operator who wants a Feishu entrypoint into their own computer.
+- Runtime: a local Node.js daemon managed by launchd.
+- Input: Feishu/Lark IM events from `lark-cli event +subscribe`.
+- Output: Feishu replies and reactions.
+- Agent bridge: normal messages go to Codex chat by default; `/detail` shows verbose Codex events.
+- Session model: private chats use `chatId:senderId`; group chats use `chatId`; `/new` starts a fresh Codex binding.
+- State: config and runtime data live under `~/.doujie`; build artifacts and local data are not committed.
+- Boundary: Doujie is a control plane, not a project-specific coding worker. Future project work should be dispatched through explicit project/agent metadata.
 
 ## Current Runtime
 
@@ -13,14 +22,6 @@ The key design point: Doujie is the user's control-plane employee, not a project
 - Doujie session registry: `~/.doujie/sessions/`
 - LaunchAgent: `~/Library/LaunchAgents/com.doujie.daemon.plist`
 - Log: `/tmp/doujie.log`
-
-The retired InfoHunter LaunchAgent is intentionally disabled as:
-
-```text
-~/Library/LaunchAgents/com.infohunter.daemon.plist.disabled
-```
-
-Do not restore it unless explicitly rolling back.
 
 ## What It Does
 
@@ -33,7 +34,7 @@ Do not restore it unless explicitly rolling back.
 - Adds Feishu reactions for Codex status: thinking, done, error.
 - Tracks per-chat Codex sessions in `~/.doujie/codex-sessions.json`.
 - Maintains a readable session registry and jsonl links in `~/.doujie/sessions/`.
-- Keeps the old message search, digest, Q&A, backup, export, and web memory tools.
+- Provides message search, recent history, digest, Q&A, backup, export, cleanup, and a read-only local memory web UI.
 
 ## Commands
 
@@ -142,13 +143,6 @@ Inspect logs:
 tail -n 120 /tmp/doujie.log
 ```
 
-Confirm old service is not loaded:
-
-```bash
-test ! -f ~/Library/LaunchAgents/com.infohunter.daemon.plist && echo old-plist-disabled
-launchctl print gui/$(id -u)/com.infohunter.daemon 2>/dev/null || echo old-service-not-loaded
-```
-
 The production plist should run:
 
 ```text
@@ -178,10 +172,10 @@ Expected reply:
 DOUJIE_E2E_OK
 ```
 
-The latest verified migration tests were:
+The latest verified smoke tests were:
 
 - `pnpm typecheck`: passed
-- `pnpm test`: 126 passed
+- `pnpm test`: 124 passed
 - `pnpm build`: passed
 - Feishu `/status`: returned `Doujie Status` with DB `~/.doujie/data.db`
 - Feishu Codex chat after restart: returned `DOUJIE_AFTER_RESTART_OK`

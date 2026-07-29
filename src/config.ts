@@ -5,9 +5,7 @@ import yaml from 'js-yaml';
 import type { AppConfig, FeishuIdentity, PrivacyPattern } from './types.js';
 
 export const CONFIG_DIR = path.join(os.homedir(), '.doujie');
-export const LEGACY_CONFIG_DIR = path.join(os.homedir(), '.infohunter');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.yaml');
-const LEGACY_CONFIG_FILE = path.join(LEGACY_CONFIG_DIR, 'config.yaml');
 const DEFAULT_DB_PATH = path.join(CONFIG_DIR, 'data.db');
 const DEFAULT_BACKUP_DIR = path.join(CONFIG_DIR, 'backups');
 const DEFAULT_EXPORT_DIR = path.join(CONFIG_DIR, 'exports');
@@ -36,11 +34,10 @@ function ensureConfigDir(): void {
 
 function loadYamlConfig(): Record<string, unknown> {
   ensureConfigDir();
-  const configFile = fs.existsSync(CONFIG_FILE) ? CONFIG_FILE : LEGACY_CONFIG_FILE;
-  if (!fs.existsSync(configFile)) {
+  if (!fs.existsSync(CONFIG_FILE)) {
     return {};
   }
-  const raw = fs.readFileSync(configFile, 'utf-8');
+  const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
   const parsed = yaml.load(raw);
   if (typeof parsed === 'object' && parsed !== null) {
     return parsed as Record<string, unknown>;
@@ -80,23 +77,19 @@ export function buildConfig(
       workdir: expandTilde(
         validateOptionalString(env.DOUJIE_CODEX_WORKDIR, 'DOUJIE_CODEX_WORKDIR') ||
         validateOptionalString(getNestedValue(yamlConfig, 'codex', 'workdir'), 'codex.workdir') ||
-        validateOptionalString(env.INFOHUNTER_CODEX_WORKDIR, 'INFOHUNTER_CODEX_WORKDIR') ||
         process.cwd()
       ),
       sandbox:
         validateCodexSandbox(env.DOUJIE_CODEX_SANDBOX, 'DOUJIE_CODEX_SANDBOX') ||
         validateCodexSandbox(getNestedValue(yamlConfig, 'codex', 'sandbox'), 'codex.sandbox') ||
-        validateCodexSandbox(env.INFOHUNTER_CODEX_SANDBOX, 'INFOHUNTER_CODEX_SANDBOX') ||
         'workspace-write',
       skipGitRepoCheck:
         validateOptionalBoolean(env.DOUJIE_CODEX_SKIP_GIT_REPO_CHECK, 'DOUJIE_CODEX_SKIP_GIT_REPO_CHECK') ??
         validateOptionalBoolean(getNestedValue(yamlConfig, 'codex', 'skip_git_repo_check'), 'codex.skip_git_repo_check') ??
-        validateOptionalBoolean(env.INFOHUNTER_CODEX_SKIP_GIT_REPO_CHECK, 'INFOHUNTER_CODEX_SKIP_GIT_REPO_CHECK') ??
         false,
       controlSessionDir: expandTilde(
         validateOptionalString(env.DOUJIE_CODEX_CONTROL_SESSION_DIR, 'DOUJIE_CODEX_CONTROL_SESSION_DIR') ||
         validateOptionalString(getNestedValue(yamlConfig, 'codex', 'control_session_dir'), 'codex.control_session_dir') ||
-        validateOptionalString(env.INFOHUNTER_CODEX_CONTROL_SESSION_DIR, 'INFOHUNTER_CODEX_CONTROL_SESSION_DIR') ||
         DEFAULT_CONTROL_SESSION_DIR
       ),
     },
@@ -108,19 +101,16 @@ export function buildConfig(
       botMentionIds:
         validateOptionalStringList(env.DOUJIE_FEISHU_BOT_MENTION_IDS, 'DOUJIE_FEISHU_BOT_MENTION_IDS') ||
         validateOptionalStringList(getNestedValue(yamlConfig, 'feishu', 'bot_mention_ids'), 'feishu.bot_mention_ids') ||
-        validateOptionalStringList(env.INFOHUNTER_FEISHU_BOT_MENTION_IDS, 'INFOHUNTER_FEISHU_BOT_MENTION_IDS') ||
         [],
       botMentionNames:
         validateOptionalStringList(env.DOUJIE_FEISHU_BOT_MENTION_NAMES, 'DOUJIE_FEISHU_BOT_MENTION_NAMES') ||
         validateOptionalStringList(getNestedValue(yamlConfig, 'feishu', 'bot_mention_names'), 'feishu.bot_mention_names') ||
-        validateOptionalStringList(env.INFOHUNTER_FEISHU_BOT_MENTION_NAMES, 'INFOHUNTER_FEISHU_BOT_MENTION_NAMES') ||
         [],
     },
     storage: {
       dbPath: expandTilde(
         validateOptionalString(env.DOUJIE_DB_PATH, 'DOUJIE_DB_PATH') ||
         validateOptionalString(getNestedValue(yamlConfig, 'storage', 'db_path'), 'storage.db_path') ||
-        validateOptionalString(env.INFOHUNTER_DB_PATH, 'INFOHUNTER_DB_PATH') ||
         DEFAULT_DB_PATH
       ),
       backupDir: expandTilde(

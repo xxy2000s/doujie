@@ -4,7 +4,7 @@ import { runStartupDoctor, DoctorError } from '../src/doctor.js';
 import { createTempDbPath, removeTempDir } from './helpers.js';
 
 test('runStartupDoctor passes when commands exist and DB directory is writable', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-doctor-pass');
+  const { dir, dbPath } = createTempDbPath('doujie-doctor-pass');
   try {
     assert.doesNotThrow(() => runStartupDoctor(
       {
@@ -20,7 +20,7 @@ test('runStartupDoctor passes when commands exist and DB directory is writable',
 });
 
 test('runStartupDoctor reports missing local commands', () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-doctor-fail');
+  const { dir, dbPath } = createTempDbPath('doujie-doctor-fail');
   try {
     assert.throws(
       () => runStartupDoctor(

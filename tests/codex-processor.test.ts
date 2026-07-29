@@ -25,7 +25,7 @@ test('parseCodexResult parses valid structured output', () => {
     tags: ['技术', '产品'],
     key_points: ['事实 A'],
     action_items: ['跟进 B'],
-    entities: ['InfoHunter'],
+    entities: ['Doujie'],
     source_type: 'article',
     confidence: 0.9,
   }));
@@ -35,7 +35,7 @@ test('parseCodexResult parses valid structured output', () => {
     tags: ['技术', '产品'],
     keyPoints: ['事实 A'],
     actionItems: ['跟进 B'],
-    entities: ['InfoHunter'],
+    entities: ['Doujie'],
     sourceType: 'article',
     confidence: 0.9,
     schemaVersion: 2,

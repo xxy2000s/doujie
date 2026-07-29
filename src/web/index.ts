@@ -1,6 +1,6 @@
 import { loadConfig } from '../config.js';
 import { Store } from '../store.js';
-import { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, startInfoHunterWebServer } from './server.js';
+import { DEFAULT_WEB_HOST, DEFAULT_WEB_PORT, startDoujieWebServer } from './server.js';
 
 type WebCliOptions = {
   host: string;
@@ -56,7 +56,7 @@ async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const config = loadConfig();
   const store = new Store(options.dbPath ?? config.storage.dbPath);
-  const web = await startInfoHunterWebServer(store, {
+  const web = await startDoujieWebServer(store, {
     host: options.host,
     port: options.port,
   });

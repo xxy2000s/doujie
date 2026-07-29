@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   DEFAULT_WEB_HOST,
-  startInfoHunterWebServer,
+  startDoujieWebServer,
 } from '../src/web/server.js';
 import { Store } from '../src/store.js';
 import { createTempDbPath, removeTempDir } from './helpers.js';
@@ -11,14 +11,14 @@ async function readJson<T>(response: Response): Promise<T> {
   return await response.json() as T;
 }
 
-test('InfoHunter web server defaults to localhost binding', () => {
+test('Doujie web server defaults to localhost binding', () => {
   assert.equal(DEFAULT_WEB_HOST, '127.0.0.1');
 });
 
-test('InfoHunter web server serves static read-only UI assets', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-web-static');
+test('Doujie web server serves static read-only UI assets', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-web-static');
   const store = new Store(dbPath, () => 1000, { disableFts: true });
-  const web = await startInfoHunterWebServer(store, { port: 0 });
+  const web = await startDoujieWebServer(store, { port: 0 });
   try {
     assert.equal(web.host, '127.0.0.1');
     const html = await fetch(web.url).then((response) => response.text());
@@ -35,11 +35,11 @@ test('InfoHunter web server serves static read-only UI assets', async () => {
   }
 });
 
-test('InfoHunter web search API reuses store filters', async () => {
+test('Doujie web search API reuses store filters', async () => {
   let now = Date.parse('2026-03-02T12:00:00.000Z');
-  const { dir, dbPath } = createTempDbPath('infohunter-web-search');
+  const { dir, dbPath } = createTempDbPath('doujie-web-search');
   const store = new Store(dbPath, () => now, { disableFts: true });
-  const web = await startInfoHunterWebServer(store, { port: 0 });
+  const web = await startDoujieWebServer(store, { port: 0 });
   try {
     store.saveMessage({
       id: 'web-1',
@@ -98,10 +98,10 @@ test('InfoHunter web search API reuses store filters', async () => {
   }
 });
 
-test('InfoHunter web detail API returns message sources and attachments', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-web-detail');
+test('Doujie web detail API returns message sources and attachments', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-web-detail');
   const store = new Store(dbPath, () => 2000, { disableFts: true });
-  const web = await startInfoHunterWebServer(store, { port: 0 });
+  const web = await startDoujieWebServer(store, { port: 0 });
   try {
     store.saveMessage({
       id: 'detail-1',
@@ -118,7 +118,7 @@ test('InfoHunter web detail API returns message sources and attachments', async 
       tags: ['文件'],
       keyPoints: ['point'],
       actionItems: ['act'],
-      entities: ['InfoHunter'],
+      entities: ['Doujie'],
       sourceType: 'chat',
       confidence: 0.9,
       schemaVersion: 2,
@@ -172,10 +172,10 @@ test('InfoHunter web detail API returns message sources and attachments', async 
   }
 });
 
-test('InfoHunter web server rejects mutating methods', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-web-readonly');
+test('Doujie web server rejects mutating methods', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-web-readonly');
   const store = new Store(dbPath, () => 3000, { disableFts: true });
-  const web = await startInfoHunterWebServer(store, { port: 0 });
+  const web = await startDoujieWebServer(store, { port: 0 });
   try {
     const response = await fetch(`${web.url}/api/search`, { method: 'POST' });
     const payload = await readJson<{ error: string; message: string }>(response);

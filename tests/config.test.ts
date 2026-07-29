@@ -17,7 +17,6 @@ test('buildConfig accepts valid YAML and environment overrides', () => {
     {
       CODEX_MODEL: 'env-model',
       DOUJIE_DB_PATH: '/tmp/doujie-test.db',
-      INFOHUNTER_DB_PATH: '/tmp/infohunter-test.db',
     }
   );
 
@@ -39,18 +38,18 @@ test('buildConfig accepts storage maintenance directories', () => {
   const config = buildConfig(
     {
       storage: {
-        backup_dir: '~/infohunter-backups',
-        export_dir: '/tmp/infohunter-exports',
-        attachment_cache_dir: '/tmp/infohunter-attachments',
+        backup_dir: '~/doujie-backups',
+        export_dir: '/tmp/doujie-exports',
+        attachment_cache_dir: '/tmp/doujie-attachments',
       },
       attachments: { ocr_command: 'ocr-local --plain' },
     },
     {}
   );
 
-  assert.match(config.storage.backupDir, /infohunter-backups$/);
-  assert.equal(config.storage.exportDir, '/tmp/infohunter-exports');
-  assert.equal(config.storage.attachmentCacheDir, '/tmp/infohunter-attachments');
+  assert.match(config.storage.backupDir, /doujie-backups$/);
+  assert.equal(config.storage.exportDir, '/tmp/doujie-exports');
+  assert.equal(config.storage.attachmentCacheDir, '/tmp/doujie-attachments');
   assert.equal(config.attachments.ocrCommand, 'ocr-local --plain');
 });
 
@@ -79,46 +78,6 @@ test('buildConfig accepts control session directory override', () => {
   });
 
   assert.equal(config.codex.controlSessionDir, '/tmp/control-sessions');
-});
-
-test('buildConfig keeps legacy InfoHunter environment compatibility', () => {
-  const config = buildConfig({}, {
-    INFOHUNTER_FEISHU_BOT_MENTION_IDS: 'cli_legacy',
-    INFOHUNTER_DB_PATH: '/tmp/infohunter-legacy.db',
-    INFOHUNTER_CODEX_CONTROL_SESSION_DIR: '/tmp/legacy-control-sessions',
-  });
-
-  assert.deepEqual(config.feishu.botMentionIds, ['cli_legacy']);
-  assert.equal(config.storage.dbPath, '/tmp/infohunter-legacy.db');
-  assert.equal(config.codex.controlSessionDir, '/tmp/legacy-control-sessions');
-});
-
-test('buildConfig prefers Doujie YAML over legacy InfoHunter environment variables', () => {
-  const config = buildConfig(
-    {
-      codex: {
-        workdir: '/doujie/workdir',
-        control_session_dir: '/doujie/sessions',
-      },
-      feishu: {
-        bot_mention_ids: ['cli_doujie'],
-      },
-      storage: {
-        db_path: '/doujie/data.db',
-      },
-    },
-    {
-      INFOHUNTER_CODEX_WORKDIR: '/legacy/workdir',
-      INFOHUNTER_CODEX_CONTROL_SESSION_DIR: '/legacy/sessions',
-      INFOHUNTER_FEISHU_BOT_MENTION_IDS: 'cli_legacy',
-      INFOHUNTER_DB_PATH: '/legacy/data.db',
-    }
-  );
-
-  assert.equal(config.codex.workdir, '/doujie/workdir');
-  assert.equal(config.codex.controlSessionDir, '/doujie/sessions');
-  assert.deepEqual(config.feishu.botMentionIds, ['cli_doujie']);
-  assert.equal(config.storage.dbPath, '/doujie/data.db');
 });
 
 test('buildConfig rejects invalid chat id shape', () => {

@@ -38,7 +38,7 @@ function createRuntime(dbPath: string): CommandRuntime {
 }
 
 test('status command reports runtime and job counts', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-status-command');
+  const { dir, dbPath } = createTempDbPath('doujie-status-command');
   const store = new Store(dbPath, () => 1000);
   try {
     store.saveMessage({
@@ -69,7 +69,7 @@ test('status command reports runtime and job counts', async () => {
 });
 
 test('help command is generated from command metadata', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-help-command');
+  const { dir, dbPath } = createTempDbPath('doujie-help-command');
   const store = new Store(dbPath, () => 1500);
   try {
     const definitions = createCommandDefinitions(store, createRuntime(dbPath));
@@ -88,7 +88,7 @@ test('help command is generated from command metadata', async () => {
 });
 
 test('sessions command reports Doujie control sessions', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-sessions-command');
+  const { dir, dbPath } = createTempDbPath('doujie-sessions-command');
   const store = new Store(dbPath, () => 1600);
   const runtime = createRuntime(dbPath);
   fs.mkdirSync(runtime.controlSessionDir, { recursive: true });
@@ -127,7 +127,7 @@ test('sessions command reports Doujie control sessions', async () => {
 });
 
 test('recent command returns bounded message previews', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-recent-command');
+  const { dir, dbPath } = createTempDbPath('doujie-recent-command');
   const store = new Store(dbPath, () => 2000);
   try {
     store.saveMessage({
@@ -153,7 +153,7 @@ test('recent command returns bounded message previews', async () => {
 
 test('search command supports filters and renders sources', async () => {
   let now = Date.parse('2026-02-02T12:00:00.000Z');
-  const { dir, dbPath } = createTempDbPath('infohunter-search-command');
+  const { dir, dbPath } = createTempDbPath('doujie-search-command');
   const store = new Store(dbPath, () => now, { disableFts: true });
   try {
     store.saveMessage({
@@ -214,7 +214,7 @@ test('search command supports filters and renders sources', async () => {
 
 test('maintenance commands create backup export and cleanup output', async () => {
   let now = Date.parse('2026-05-01T00:00:00.000Z');
-  const { dir, dbPath } = createTempDbPath('infohunter-maintenance-command');
+  const { dir, dbPath } = createTempDbPath('doujie-maintenance-command');
   const store = new Store(dbPath, () => now, { disableFts: true });
   try {
     store.saveMessage({
@@ -257,7 +257,7 @@ test('maintenance commands create backup export and cleanup output', async () =>
 });
 
 test('search command rejects invalid filters', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-search-invalid');
+  const { dir, dbPath } = createTempDbPath('doujie-search-invalid');
   const store = new Store(dbPath, () => 4000);
   try {
     const commands = createCommandRegistry(store, createRuntime(dbPath));
@@ -271,7 +271,7 @@ test('search command rejects invalid filters', async () => {
 });
 
 test('errors command returns failed job diagnostics', async () => {
-  const { dir, dbPath } = createTempDbPath('infohunter-errors-command');
+  const { dir, dbPath } = createTempDbPath('doujie-errors-command');
   const store = new Store(dbPath, () => 3000);
   try {
     store.saveMessage({

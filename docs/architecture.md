@@ -30,7 +30,7 @@ Important files:
 - `src/router.ts`: message extraction, mention gating, command routing, default Codex routing.
 - `src/reply.ts`: Feishu reply integration.
 - `src/reaction.ts`: Feishu reaction integration.
-- `src/config.ts`: config loading and migration fallback.
+- `src/config.ts`: config loading and validation.
 
 ## Control Sessions
 
@@ -69,10 +69,9 @@ Default mode:
 - Default output hides tool/session details.
 - `/detail` enables detailed Codex events.
 
-Legacy memory mode:
+Memory mode:
 
 - Search, recent, digest, Q&A, backup, export, cleanup.
-- This is inherited from InfoHunter and is now Doujie's memory/search capability.
 
 Relevant files:
 
@@ -116,14 +115,11 @@ Defaults are under:
 ~/.doujie
 ```
 
-Legacy `~/.infohunter` paths exist only for fallback/import. New work should not write there.
-
 Precedence:
 
 1. `DOUJIE_*` env
 2. `~/.doujie/config.yaml`
-3. legacy `INFOHUNTER_*` env
-4. defaults
+3. defaults
 
 ## Deployment
 
@@ -137,12 +133,6 @@ StandardErrorPath: /tmp/doujie.log
 ```
 
 The service does not run `tsx` in production. After source changes, run `pnpm build` and restart launchd.
-
-The old InfoHunter daemon has been retired:
-
-```text
-~/Library/LaunchAgents/com.infohunter.daemon.plist.disabled
-```
 
 ## Architectural Direction
 

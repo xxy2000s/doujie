@@ -8,12 +8,12 @@ export const DEFAULT_WEB_PORT = 8787;
 const MAX_WEB_LIMIT = 100;
 const DEFAULT_WEB_LIMIT = 30;
 
-export type InfoHunterWebServerOptions = {
+export type DoujieWebServerOptions = {
   host?: string;
   port?: number;
 };
 
-export type InfoHunterWebServer = {
+export type DoujieWebServer = {
   server: Server;
   host: string;
   port: number;
@@ -27,7 +27,7 @@ type SearchParseResult =
   | { ok: true; options: SearchMessagesOptions }
   | { ok: false; message: string };
 
-export function createInfoHunterWebHandler(
+export function createDoujieWebHandler(
   store: Store,
   metadata: { host: string; getPort: () => number }
 ): (req: IncomingMessage, res: ServerResponse) => void {
@@ -62,14 +62,14 @@ export function createInfoHunterWebHandler(
   };
 }
 
-export async function startInfoHunterWebServer(
+export async function startDoujieWebServer(
   store: Store,
-  options: InfoHunterWebServerOptions = {}
-): Promise<InfoHunterWebServer> {
+  options: DoujieWebServerOptions = {}
+): Promise<DoujieWebServer> {
   const host = options.host ?? DEFAULT_WEB_HOST;
   const requestedPort = options.port ?? DEFAULT_WEB_PORT;
   let actualPort = requestedPort;
-  const server = createServer(createInfoHunterWebHandler(store, {
+  const server = createServer(createDoujieWebHandler(store, {
     host,
     getPort: () => actualPort,
   }));

@@ -17,12 +17,12 @@ test('formatReply renders high-signal structured fields', () => {
     summary: '摘要',
     tags: ['待办'],
     actionItems: ['跟进 A', '确认 B'],
-    entities: ['InfoHunter', 'Codex'],
+    entities: ['Doujie', 'Codex'],
   }));
 
   assert.match(reply, /Action Items/);
   assert.match(reply, /- 跟进 A/);
-  assert.match(reply, /\*\*Entities\*\*: InfoHunter, Codex/);
+  assert.match(reply, /\*\*Entities\*\*: Doujie, Codex/);
 });
 
 test('buildReplyArgs uses configured Feishu identity', () => {

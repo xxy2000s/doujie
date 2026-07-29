@@ -127,11 +127,9 @@ export class Router {
     codexChatRunner: CodexChatRunnerLike = defaultCodexChatRunner,
     codexChatOptions: Omit<CodexChatOptions, 'sessionKey'> = {
       model: process.env.CODEX_MODEL ?? '',
-      workdir: process.env.DOUJIE_CODEX_WORKDIR ?? process.env.INFOHUNTER_CODEX_WORKDIR ?? process.cwd(),
+      workdir: process.env.DOUJIE_CODEX_WORKDIR ?? process.cwd(),
       sandbox: 'workspace-write',
-      skipGitRepoCheck:
-        process.env.DOUJIE_CODEX_SKIP_GIT_REPO_CHECK === 'true' ||
-        process.env.INFOHUNTER_CODEX_SKIP_GIT_REPO_CHECK === 'true',
+      skipGitRepoCheck: process.env.DOUJIE_CODEX_SKIP_GIT_REPO_CHECK === 'true',
     },
     defaultMessageMode: DefaultMessageMode = 'digest',
     reactionClient: ReactionClient | null = null,

@@ -63,13 +63,6 @@ Expected startup lines:
 [doujie] Listener started. Waiting for Feishu events...
 ```
 
-Check old service remains off:
-
-```bash
-test ! -f ~/Library/LaunchAgents/com.infohunter.daemon.plist && echo old-plist-disabled
-launchctl print gui/$(id -u)/com.infohunter.daemon 2>/dev/null || echo old-service-not-loaded
-```
-
 ## Feishu E2E Test
 
 Use an existing Doujie chat. Keep the real chat id in private operator notes or shell history, not in git.
@@ -154,20 +147,6 @@ Expected:
 - `controlSessionDir` is `~/.doujie/sessions`
 - `dbPath` is `~/.doujie/data.db`
 - `mentionIds` or `mentionNames` is non-empty
-
-## Rollback Notes
-
-Rollback should be explicit. Do not accidentally re-enable InfoHunter.
-
-Old backup paths:
-
-```text
-~/workspace/InfoHunter/apps/infohunter
-~/.infohunter
-~/Library/LaunchAgents/com.infohunter.daemon.plist.disabled
-```
-
-If rollback is requested, stop Doujie first, restore the old plist intentionally, and verify only one listener is running.
 
 ## Known CLI Notice
 

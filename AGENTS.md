@@ -10,7 +10,6 @@ Correct mental model:
 
 ```text
 Doujie = Feishu entrypoint + local control plane + Codex session bridge + memory/search module
-InfoHunter = legacy memory/search/digest capability now embedded inside Doujie
 Project agents = separate workers that Doujie should dispatch or resume explicitly
 ```
 
@@ -25,20 +24,14 @@ Project agents = separate workers that Doujie should dispatch or resume explicit
 - LaunchAgent label: `com.doujie.daemon`
 - LaunchAgent file: `~/Library/LaunchAgents/com.doujie.daemon.plist`
 - Runtime log: `/tmp/doujie.log`
-- Retired old plist: `~/Library/LaunchAgents/com.infohunter.daemon.plist.disabled`
-
-Do not write new runtime state under `~/.infohunter`. That path exists only for legacy fallback/import.
 
 ## Safety Rules
 
 - Never print or commit real `~/.doujie/config.yaml`, Feishu credentials, OpenAI keys, access tokens, or event WebSocket tickets.
-- Do not restore `com.infohunter.daemon.plist` unless explicitly rolling back.
 - Do not run two Feishu listeners for the same bot at the same time.
 - Do not delete or rewrite `~/.codex/sessions`; Doujie only indexes and links to Codex jsonl files.
 - Keep `node_modules`, `dist`, `data`, `*.db`, logs, and local config out of git.
-- When touching launchd, verify both new and old services:
-  - `launchctl print gui/$(id -u)/com.doujie.daemon`
-  - `launchctl print gui/$(id -u)/com.infohunter.daemon 2>/dev/null || echo old-service-not-loaded`
+- When touching launchd, verify `launchctl print gui/$(id -u)/com.doujie.daemon`.
 
 ## Coding Conventions
 
@@ -56,10 +49,7 @@ Do not write new runtime state under `~/.infohunter`. That path exists only for 
 
 1. `DOUJIE_*` environment variables
 2. `~/.doujie/config.yaml`
-3. legacy `INFOHUNTER_*` environment variables
-4. built-in defaults under `~/.doujie`
-
-If `~/.doujie/config.yaml` is absent, the loader may read `~/.infohunter/config.yaml` as a legacy fallback. This is for migration compatibility only.
+3. built-in defaults under `~/.doujie`
 
 Important variables:
 
@@ -73,8 +63,6 @@ DOUJIE_FEISHU_BOT_MENTION_IDS
 DOUJIE_FEISHU_BOT_MENTION_NAMES
 DOUJIE_DB_PATH
 ```
-
-Legacy `INFOHUNTER_*` variables should not be introduced into new deployment config.
 
 ## Feishu Routing Rules
 
@@ -151,5 +139,4 @@ Expected reply is exactly `DOUJIE_E2E_OK`.
 ## Known Follow-Ups
 
 - Add a first-class project/agent registry so Doujie can dispatch work to project agents instead of doing everything inside its own control-plane session.
-- Rename `InfoHunterWebServer*` symbols to Doujie names when touching the web memory module.
 - Consider upgrading `lark-cli`; current CLI has reported a newer version is available.

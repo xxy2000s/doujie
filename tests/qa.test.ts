@@ -16,7 +16,7 @@ const evidence: AskEvidence[] = [
     tags: '["技术","待办"]',
     keyPoints: '["fact one"]',
     actionItems: '["ship it"]',
-    entities: '["InfoHunter"]',
+    entities: '["Doujie"]',
     sourceType: 'chat',
     confidence: 0.9,
     schemaVersion: 2,
