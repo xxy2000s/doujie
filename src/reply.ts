@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process';
 import type { AIResult, FeishuIdentity } from './types.js';
 
 const MAX_POST_MARKDOWN_CHARS = 800;
-const MAX_CARD_MARKDOWN_CHARS = 5500;
 
 export type StatusCardState = 'thinking' | 'working' | 'done' | 'error';
 
@@ -13,7 +12,6 @@ export type StatusCardParams = {
   detail?: string;
   elapsedMs?: number;
   dots?: number;
-  result?: string;
   sessionId?: string | null;
 };
 
@@ -97,9 +95,6 @@ export function buildStatusCard(params: StatusCardParams): Record<string, unknow
   const elapsed = params.elapsedMs === undefined ? '' : `\n**已用时：** ${formatElapsed(params.elapsedMs)}`;
   const session = params.sessionId ? `\n**Session：** \`${params.sessionId}\`` : '';
   const detail = params.detail ? `\n**详情：** ${params.detail}` : '';
-  const result = params.result
-    ? `\n\n---\n${truncateCardMarkdown(params.result)}`
-    : '';
 
   return {
     config: {
@@ -119,7 +114,7 @@ export function buildStatusCard(params: StatusCardParams): Record<string, unknow
         tag: 'div',
         text: {
           tag: 'lark_md',
-          content: `**状态：** ${stateLabel}${dots}\n**阶段：** ${params.stage}${elapsed}${session}${detail}${result}`,
+          content: `**状态：** ${stateLabel}${dots}\n**阶段：** ${params.stage}${elapsed}${session}${detail}`,
         },
       },
     ],
@@ -344,9 +339,4 @@ function formatElapsed(elapsedMs: number): string {
   const seconds = Math.max(0, Math.round(elapsedMs / 1000));
   if (seconds < 60) return `${seconds}s`;
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}
-
-function truncateCardMarkdown(markdown: string): string {
-  if (markdown.length <= MAX_CARD_MARKDOWN_CHARS) return markdown;
-  return `${markdown.slice(0, MAX_CARD_MARKDOWN_CHARS)}\n\n...结果过长，已截断显示。`;
 }

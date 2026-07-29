@@ -103,7 +103,7 @@ type CodexStatusCardHandle = {
   startedAt: number;
   stop(): void;
   markOutputStarted(): void;
-  finish(result: string, sessionId: string | null): Promise<void>;
+  finish(sessionId: string | null, hadOutput: boolean): Promise<void>;
   fail(error: Error): Promise<void>;
 };
 
@@ -720,7 +720,6 @@ export class Router {
     }
 
     let chunksSent = 0;
-    const answerChunks: string[] = [];
     const statusCard = detailed ? null : await this.createCodexStatusCard(message.messageId);
     try {
       const result = await this.codexChatRunner.run(
@@ -732,12 +731,10 @@ export class Router {
         },
         async (chunk: string): Promise<void> => {
           chunksSent += 1;
-          if (detailed || !statusCard) {
-            await this.replyClient.replyText(message.messageId, chunk);
-          } else {
-            answerChunks.push(chunk);
+          if (statusCard) {
             statusCard.markOutputStarted();
           }
+          await this.replyClient.replyText(message.messageId, chunk);
         }
       );
 
@@ -748,10 +745,10 @@ export class Router {
           result.sessionId ? `Codex 任务结束。session: ${result.sessionId}` : 'Codex 任务结束。'
         );
       } else if (statusCard) {
-        await statusCard.finish(
-          chunksSent === 0 ? 'Codex 没有返回可显示内容。' : answerChunks.join('\n\n'),
-          result.sessionId
-        );
+        if (chunksSent === 0) {
+          await this.replyClient.replyText(message.messageId, 'Codex 没有返回可显示内容。');
+        }
+        await statusCard.finish(result.sessionId, chunksSent > 0);
       } else if (chunksSent === 0) {
         await this.replyClient.replyText(message.messageId, 'Codex 没有返回可显示内容。');
       }
@@ -787,7 +784,7 @@ export class Router {
       stage,
       elapsedMs: Date.now() - startedAt,
       dots,
-      detail: '豆姐正在调度本地 Agent，完成后会在这条卡片里更新结果。',
+      detail: '豆姐正在调度本地 Agent，正文会实时分段发送。',
     });
 
     let statusMessageId: string | null = null;
@@ -832,16 +829,15 @@ export class Router {
       markOutputStarted(): void {
         stage = '整理输出';
       },
-      async finish(result: string, sessionId: string | null): Promise<void> {
+      async finish(sessionId: string | null, hadOutput: boolean): Promise<void> {
         stop();
         if (!updateStatusCard) return;
         await updateStatusCard(statusMessageId, {
           state: 'done',
           title: '豆姐完成了',
-          stage: '已生成最终结果',
+          stage: hadOutput ? '正文已发送完成' : '没有可显示输出',
           elapsedMs: Date.now() - startedAt,
           sessionId,
-          result,
         });
       },
       async fail(error: Error): Promise<void> {

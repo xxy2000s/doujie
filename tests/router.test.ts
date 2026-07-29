@@ -227,7 +227,7 @@ test('Router dispatches commands through injected reply client', async () => {
   }
 });
 
-test('Router updates one status card for non-detail Codex chat when supported', async () => {
+test('Router streams Codex chunks while updating one status card when supported', async () => {
   const { dir, dbPath } = createTempDbPath('doujie-router-codex-status-card');
   const store = new Store(dbPath, () => 1110);
   const reply = createFakeReplyWithStatusCards();
@@ -267,15 +267,15 @@ test('Router updates one status card for non-detail Codex chat when supported', 
       senderAtEventRoot: true,
     }));
 
-    assert.deepEqual(reply.texts, []);
+    assert.deepEqual(reply.texts.map((item) => item.text), ['chunk one', 'chunk two']);
     assert.equal(reply.statusCards.length, 1);
     assert.equal(reply.statusCards[0]?.messageId, 'codex-card-1');
     assert.equal(reply.statusCards[0]?.params.state, 'thinking');
     assert.equal(reply.statusUpdates.length, 1);
     assert.equal(reply.statusUpdates[0]?.messageId, 'card-codex-card-1');
     assert.equal(reply.statusUpdates[0]?.params.state, 'done');
-    assert.match(reply.statusUpdates[0]?.params.result ?? '', /chunk one/);
-    assert.match(reply.statusUpdates[0]?.params.result ?? '', /chunk two/);
+    assert.equal(reply.statusUpdates[0]?.params.stage, '正文已发送完成');
+    assert.equal('result' in reply.statusUpdates[0]!.params, false);
     assert.deepEqual(reaction.reactions, [
       { messageId: 'codex-card-1', emojiType: 'THINKING' },
       { messageId: 'codex-card-1', emojiType: 'DONE' },

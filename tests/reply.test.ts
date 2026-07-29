@@ -84,7 +84,7 @@ test('buildStatusCard creates updateable interactive card content', () => {
 });
 
 test('status card reply and patch args use interactive and Feishu patch API', () => {
-  const params = { state: 'done' as const, stage: '完成', result: '**OK**' };
+  const params = { state: 'done' as const, stage: '完成', sessionId: 'session-1' };
 
   const replyArgs = buildStatusCardReplyArgs('msg-1', params, 'bot');
   assert.deepEqual(replyArgs.slice(0, 4), ['im', '+messages-reply', '--message-id', 'msg-1']);
