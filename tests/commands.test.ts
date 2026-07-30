@@ -147,8 +147,8 @@ test('session command reports the current Feishu session binding', async () => {
         'chat:sender': {
           sessionKey: 'chat:sender',
           sessionId: '019f-current-session',
-          workdir: '/Users/xiaxu/service/doujie',
-          codexJsonlPath: '/Users/xiaxu/.codex/sessions/current.jsonl',
+          workdir: '/home/doujie/service/doujie',
+          codexJsonlPath: '/home/doujie/.codex/sessions/current.jsonl',
           linkPath: `${runtime.controlSessionDir}/links/chat_user.jsonl`,
           active: true,
           firstSeenAt: '2026-07-30T00:00:00.000Z',
@@ -165,7 +165,7 @@ test('session command reports the current Feishu session binding', async () => {
     assert.match(result ?? '', /当前 Codex Session/);
     assert.match(result ?? '', /chat:sender/);
     assert.match(result ?? '', /019f-current-session/);
-    assert.match(result ?? '', /\/Users\/xiaxu\/service\/doujie/);
+    assert.match(result ?? '', /\/home\/doujie\/service\/doujie/);
     assert.match(result ?? '', /\*\*Project:\*\* doujie/);
     assert.match(result ?? '', /current\.jsonl/);
   } finally {

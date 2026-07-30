@@ -21,6 +21,7 @@ Project agents = separate workers that Doujie dispatches, resumes, or audits exp
 - SQLite DB: `~/.doujie/data.db`
 - Codex session state: `~/.doujie/codex-sessions.json`
 - Control session registry: `~/.doujie/sessions`
+- Project Agent registry: `~/.doujie/agent-sessions.json`
 - LaunchAgent label: `com.doujie.daemon`
 - LaunchAgent file: `~/Library/LaunchAgents/com.doujie.daemon.plist`
 - Runtime log: `/tmp/doujie.log`
@@ -71,6 +72,8 @@ DOUJIE_DB_PATH
 - Group session key: `chatId`.
 - Private session key: `chatId:senderId`.
 - Default mode is Codex chat.
+- Natural-language project Agent creation is intercepted before default Codex chat when provider, cwd, alias, and session intent can be parsed.
+- Project Agent creation requires a structured confirmation; only the same Feishu user in the same chat can reply `确认` or `取消`.
 - `/detail <prompt>` shows verbose Codex events.
 - Plain messages hide tool/session noise by default.
 - Production config must keep `feishu.bot_mention_ids` or `feishu.bot_mention_names` populated. If both are empty, any mention in a group message can pass the group mention gate.
@@ -92,6 +95,14 @@ Doujie keeps its own control-plane index under:
 ```
 
 Use `/sessions` in Feishu to inspect mappings. Use `/new` to clear the current Feishu binding and start a fresh Codex session on the next turn.
+
+Project Agent sessions are separate from Doujie's own Feishu binding:
+
+```text
+~/.doujie/agent-sessions.json
+```
+
+Each record stores `alias`, `provider`, `nativeSessionId`, `cwd`, `jsonlPath`, creator metadata, and launch defaults. Use `/agent-sessions [alias]` in Feishu to inspect this registry. For named project Agent lookup, check this registry before scanning `~/.codex/sessions` or `~/.claude/projects`.
 
 ## Required Verification Before Handoff
 
@@ -138,5 +149,5 @@ Expected reply is exactly `DOUJIE_E2E_OK`.
 
 ## Known Follow-Ups
 
-- Add a first-class project/agent registry so Doujie can dispatch work to project agents instead of doing everything inside its own control-plane session.
+- Add natural-language dispatch/resume to existing project Agent aliases.
 - Consider upgrading `lark-cli`; current CLI has reported a newer version is available.

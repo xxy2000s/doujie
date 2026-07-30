@@ -8,6 +8,7 @@ import { createRecentHandler } from './recent.js';
 import { createErrorsHandler } from './errors.js';
 import { createBackupHandler, createCleanupHandler, createExportHandler } from './maintenance.js';
 import { createSessionHandler, createSessionsHandler } from './sessions.js';
+import { createAgentSessionsHandler } from './agent-sessions.js';
 
 export type CommandRuntime = {
   startedAt: number;
@@ -16,6 +17,7 @@ export type CommandRuntime = {
   backupDir: string;
   exportDir: string;
   controlSessionDir: string;
+  agentSessionRegistryPath?: string;
   clock?: () => number;
   getListenerStatus(): ListenerStatus;
 };
@@ -28,6 +30,7 @@ function defaultRuntime(): CommandRuntime {
     backupDir: '.',
     exportDir: '.',
     controlSessionDir: '.',
+    agentSessionRegistryPath: undefined,
     getListenerStatus: () => ({ state: 'stopped', lastEventAt: null, restartCount: 0 }),
   };
 }
@@ -150,6 +153,12 @@ export function createCommandDefinitions(
       usage: 'session',
       description: 'Show the current Feishu chat Codex session binding',
       handler: createSessionHandler(runtime),
+    },
+    {
+      name: 'agent-sessions',
+      usage: 'agent-sessions [alias]',
+      description: 'Show registered project Agent sessions',
+      handler: createAgentSessionsHandler(runtime),
     },
     {
       name: 'backup',

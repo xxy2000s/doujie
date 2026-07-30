@@ -21,6 +21,7 @@ Read this first:
 - SQLite DB: `~/.doujie/data.db`
 - Codex session state: `~/.doujie/codex-sessions.json`
 - Doujie session registry: `~/.doujie/sessions/`
+- Project Agent registry: `~/.doujie/agent-sessions.json`
 - LaunchAgent: `~/Library/LaunchAgents/com.doujie.daemon.plist`
 - Log: `/tmp/doujie.log`
 
@@ -35,7 +36,8 @@ Read this first:
 - Adds Feishu reactions for Codex status: thinking, done, error.
 - Tracks per-chat Codex sessions in `~/.doujie/codex-sessions.json`.
 - Maintains a readable session registry and jsonl links in `~/.doujie/sessions/`.
-- Provides the base for a project/agent registry so 豆姐 can dispatch work to named agents instead of doing every task in her own control session.
+- Creates named project Agent sessions from natural language after structured confirmation.
+- Registers named project Agent sessions in `~/.doujie/agent-sessions.json` with provider, cwd, native session id, and JSONL path.
 - Provides message search, recent history, digest, Q&A, backup, export, cleanup, and a read-only local memory web UI.
 
 ## Commands
@@ -46,6 +48,7 @@ Feishu commands:
 /help
 /status
 /sessions
+/agent-sessions [alias]
 /new [prompt]
 /detail <prompt>
 /codex <prompt>
@@ -66,6 +69,14 @@ Feishu commands:
 ```
 
 Normal non-command messages are routed to Codex chat by default.
+
+Natural-language project Agent creation uses a confirmation step before any CLI session is launched:
+
+```text
+去 /home/doujie/service/doujie 开个 codex session，叫 doujie-main，让它先熟悉项目
+```
+
+Doujie replies with a structured draft containing provider, alias, cwd, prompt, and default permission. Reply `确认` to execute or `取消` to discard. Codex sessions default to `workspace-write`; Claude Code sessions default to `default` permission mode.
 
 ## Setup
 
@@ -177,10 +188,11 @@ DOUJIE_E2E_OK
 The latest verified smoke tests were:
 
 - `pnpm typecheck`: passed
-- `pnpm test`: 124 passed
+- `pnpm test`: 139 passed
 - `pnpm build`: passed
 - Feishu `/status`: returned `Doujie Status` with DB `~/.doujie/data.db`
 - Feishu Codex chat after restart: returned `DOUJIE_AFTER_RESTART_OK`
+- Feishu Agent create flow: structured confirmation returned, `@豆姐 确认` created alias `doujie-e2e-0731a` and wrote `~/.doujie/agent-sessions.json`
 
 ## Documentation
 

@@ -42,6 +42,8 @@ import {
   formatNoEvidenceAnswer,
   getAskEvidence,
 } from './qa.js';
+import { AgentSessionIntentController, type AgentSessionIntentResult } from './agent-session-intent.js';
+import { HeadlessAgentRunner } from './headless-agent-runner.js';
 
 type AIPipelineLike = {
   process(text: string): Promise<AIResult>;
@@ -76,6 +78,11 @@ export type ReplyClient = {
 
 export type ReactionClient = {
   addReaction(messageId: string, emojiType: ReactionEmoji): Promise<void>;
+};
+
+export type AgentSessionIntentControllerLike = {
+  handle(message: MessageContent): Promise<AgentSessionIntentResult | null>;
+  hasPendingConfirmation?(message: MessageContent): boolean;
 };
 
 export type UrlFetcher = {
@@ -132,6 +139,7 @@ export class Router {
   private defaultMessageMode: DefaultMessageMode;
   private botMentionConfig: BotMentionConfig;
   private activeCodexTurns = new Map<string, ActiveCodexTurn>();
+  private agentSessionIntentController: AgentSessionIntentControllerLike | null;
 
   constructor(
     commands: Map<string, CommandHandler>,
@@ -153,7 +161,8 @@ export class Router {
     },
     defaultMessageMode: DefaultMessageMode = 'digest',
     reactionClient: ReactionClient | null = null,
-    botMentionConfig: BotMentionConfig = { ids: [], names: [] }
+    botMentionConfig: BotMentionConfig = { ids: [], names: [] },
+    agentSessionIntentController: AgentSessionIntentControllerLike | null = new AgentSessionIntentController(new HeadlessAgentRunner())
   ) {
     this.commands = commands;
     this.aiPipeline = aiPipeline;
@@ -170,6 +179,7 @@ export class Router {
     this.codexChatOptions = codexChatOptions;
     this.defaultMessageMode = defaultMessageMode;
     this.botMentionConfig = botMentionConfig;
+    this.agentSessionIntentController = agentSessionIntentController;
   }
 
   async handleEvent(event: FeishuEvent): Promise<void> {
@@ -249,6 +259,8 @@ export class Router {
     try {
       if (this.isCommand(message.text)) {
         await this.handleCommand(message);
+      } else if (await this.handleAgentSessionIntent(message)) {
+        return;
       } else {
         await this.handleDefault(message, mode);
       }
@@ -348,7 +360,7 @@ export class Router {
 
   private shouldProcessMessage(message: MessageContent): boolean {
     if (!this.isGroupChat(message.chatType)) return true;
-    return this.hasBotMention(message);
+    return this.hasBotMention(message) || Boolean(this.agentSessionIntentController?.hasPendingConfirmation?.(message));
   }
 
   private isGroupChat(chatType: string): boolean {
@@ -501,6 +513,17 @@ export class Router {
       );
       this.store.markReplied(message.messageId);
     }
+  }
+
+  private async handleAgentSessionIntent(message: MessageContent): Promise<boolean> {
+    if (!this.agentSessionIntentController) return false;
+    const result = await this.agentSessionIntentController.handle(message);
+    if (!result) return false;
+    this.store.setProcessingMode(message.messageId, 'agent_session');
+    this.store.markProcessing(message.messageId, 'agent_session');
+    await this.replyClient.replyText(message.messageId, result.text);
+    this.store.markReplied(message.messageId);
+    return true;
   }
 
   private parseCommand(text: string): { name: string; args: string } | null {

@@ -98,7 +98,8 @@ export type ProcessingMode =
   | 'digest'
   | 'skip'
   | 'retry'
-  | 'redo';
+  | 'redo'
+  | 'agent_session';
 
 export interface ProcessingJob {
   messageId: string;

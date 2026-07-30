@@ -18,7 +18,7 @@ Project work should be dispatched through an explicit project/agent registry rat
 Feishu event stream
   -> EventListener
   -> Router
-  -> command handler OR default Codex chat
+  -> command handler OR project Agent intent OR default Codex chat
   -> reply client
   -> Feishu message reply
 ```
@@ -34,10 +34,11 @@ Important files:
 
 ## Control Sessions
 
-Doujie has two session layers:
+Doujie has three session layers:
 
 1. `~/.doujie/codex-sessions.json`: maps Feishu session keys to Codex session ids.
 2. `~/.doujie/sessions/`: operator-facing registry with metadata and links to Codex jsonl files.
+3. `~/.doujie/agent-sessions.json`: project Agent registry keyed by user-facing alias.
 
 Session key rules:
 
@@ -50,7 +51,13 @@ Relevant files:
 
 - `src/ai/codex-chat.ts`
 - `src/control-sessions.ts`
+- `src/agent-session-registry.ts`
+- `src/headless-agent-runner.ts`
+- `src/agent-session-intent.ts`
 - `src/commands/sessions.ts`
+- `src/commands/agent-sessions.ts`
+
+Project Agent records store `alias + provider + nativeSessionId + cwd + jsonlPath`. Alias alone is never enough to resume a provider session; dispatch must use the stored provider and cwd with the native session id.
 
 ## Message Processing Modes
 
@@ -66,6 +73,8 @@ Command mode:
 Default mode:
 
 - Normal messages are routed to Codex chat.
+- Natural-language requests to create a Codex or Claude Code project Agent session are intercepted before default Codex chat.
+- Agent creation always sends a structured confirmation first. The same Feishu user in the same chat must reply `确认`; `取消` clears the pending action.
 - Default output hides tool/session details.
 - `/detail` enables detailed Codex events.
 
@@ -136,18 +145,4 @@ The service does not run `tsx` in production. After source changes, run `pnpm bu
 
 ## Architectural Direction
 
-Next major capability should be a project/agent registry:
-
-```ts
-type AgentRecord = {
-  id: string;
-  name: string;
-  root: string;
-  kind: 'codex';
-  defaultSessionId?: string;
-  status: 'idle' | 'running' | 'blocked';
-  lastSeenAt?: string;
-};
-```
-
-This would let Doujie answer questions such as "dispatch this to the Ashare agent" or "resume the devix website session" without changing Doujie's own control-plane working directory.
+The project Agent registry is now the first source for named Agent lookup. Future dispatch/resume work should prefer the registry and only scan `~/.codex/sessions` or `~/.claude/projects` when no registry record matches.
