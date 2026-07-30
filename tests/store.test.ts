@@ -101,6 +101,38 @@ test('Store saves messages with deterministic timestamps and skips duplicates', 
   }
 });
 
+test('Store updates edited messages and deduplicates event versions', () => {
+  const { dir, dbPath } = createTempDbPath('doujie-store-edited-message');
+  const store = new Store(dbPath, () => 223344);
+  try {
+    store.saveEditedMessage({
+      id: 'edit-1',
+      chatId: 'chat-1',
+      senderId: 'sender-1',
+      content: 'before edit',
+      messageType: 'text',
+      rawEvent: '{"version":1}',
+    });
+    store.saveEditedMessage({
+      id: 'edit-1',
+      chatId: 'chat-1',
+      senderId: 'sender-1',
+      content: 'after edit mention doujie',
+      messageType: 'text',
+      rawEvent: '{"version":2}',
+    });
+
+    assert.equal(store.getMessageContent('edit-1'), 'after edit mention doujie');
+    assert.equal(store.searchMessages('after edit')[0]?.id, 'edit-1');
+    assert.equal(store.recordMessageEventVersion('edit-1', 'im.message.message_updated_v1', 'update:1'), true);
+    assert.equal(store.recordMessageEventVersion('edit-1', 'im.message.message_updated_v1', 'update:1'), false);
+    assert.equal(store.recordMessageEventVersion('edit-1', 'im.message.message_updated_v1', 'update:2'), true);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
 test('Store initializes an empty database with current schema version', () => {
   const { dir, dbPath } = createTempDbPath('doujie-migration-empty');
   const store = new Store(dbPath, () => 7000);
@@ -116,6 +148,7 @@ test('Store initializes an empty database with current schema version', () => {
       { version: 7, name: 'create_tag_feedback', applied_at: 7000 },
       { version: 8, name: 'create_attachments', applied_at: 7000 },
       { version: 9, name: 'add_attachment_extraction', applied_at: 7000 },
+      { version: 10, name: 'create_message_event_versions', applied_at: 7000 },
     ]);
   } finally {
     store.close();
@@ -140,6 +173,7 @@ test('Store upgrades an existing MVP database without dropping data', () => {
       { version: 7, name: 'create_tag_feedback', applied_at: 8000 },
       { version: 8, name: 'create_attachments', applied_at: 8000 },
       { version: 9, name: 'add_attachment_extraction', applied_at: 8000 },
+      { version: 10, name: 'create_message_event_versions', applied_at: 8000 },
     ]);
   } finally {
     store.close();
@@ -165,6 +199,7 @@ test('Store does not rerun migrations on repeated startup', () => {
       { version: 7, name: 'create_tag_feedback', applied_at: 9000 },
       { version: 8, name: 'create_attachments', applied_at: 9000 },
       { version: 9, name: 'add_attachment_extraction', applied_at: 9000 },
+      { version: 10, name: 'create_message_event_versions', applied_at: 9000 },
     ]);
   } finally {
     secondStore.close();

@@ -68,6 +68,8 @@ export function buildConfig(
   yamlConfig: Record<string, unknown>,
   env: NodeJS.ProcessEnv = process.env
 ): AppConfig {
+  const feishuAs =
+    validateFeishuIdentity(getNestedValue(yamlConfig, 'feishu', 'as'), 'feishu.as') || 'bot';
   return {
     codex: {
       model:
@@ -96,8 +98,7 @@ export function buildConfig(
     feishu: {
       chatIds:
         validateOptionalStringArray(getNestedValue(yamlConfig, 'feishu', 'chat_ids'), 'feishu.chat_ids') || [],
-      as:
-        validateFeishuIdentity(getNestedValue(yamlConfig, 'feishu', 'as'), 'feishu.as') || 'bot',
+      as: feishuAs,
       botMentionIds:
         validateOptionalStringList(env.DOUJIE_FEISHU_BOT_MENTION_IDS, 'DOUJIE_FEISHU_BOT_MENTION_IDS') ||
         validateOptionalStringList(getNestedValue(yamlConfig, 'feishu', 'bot_mention_ids'), 'feishu.bot_mention_ids') ||
@@ -106,6 +107,23 @@ export function buildConfig(
         validateOptionalStringList(env.DOUJIE_FEISHU_BOT_MENTION_NAMES, 'DOUJIE_FEISHU_BOT_MENTION_NAMES') ||
         validateOptionalStringList(getNestedValue(yamlConfig, 'feishu', 'bot_mention_names'), 'feishu.bot_mention_names') ||
         [],
+      editPolling: {
+        enabled:
+          validateOptionalBoolean(getNestedValue(yamlConfig, 'feishu', 'edit_polling', 'enabled'), 'feishu.edit_polling.enabled') ??
+          false,
+        chatIds:
+          validateOptionalStringArray(getNestedValue(yamlConfig, 'feishu', 'edit_polling', 'chat_ids'), 'feishu.edit_polling.chat_ids') ||
+          [],
+        as:
+          validateFeishuIdentity(getNestedValue(yamlConfig, 'feishu', 'edit_polling', 'as'), 'feishu.edit_polling.as') ||
+          feishuAs,
+        intervalMs:
+          validateOptionalPositiveInteger(getNestedValue(yamlConfig, 'feishu', 'edit_polling', 'interval_ms'), 'feishu.edit_polling.interval_ms') ||
+          10000,
+        pageSize:
+          validateOptionalPositiveInteger(getNestedValue(yamlConfig, 'feishu', 'edit_polling', 'page_size'), 'feishu.edit_polling.page_size') ||
+          20,
+      },
     },
     storage: {
       dbPath: expandTilde(
@@ -200,6 +218,14 @@ function validateOptionalBoolean(value: unknown, label: string): boolean | undef
     if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
   }
   throw new ConfigError(`${label} must be a boolean`);
+}
+
+function validateOptionalPositiveInteger(value: unknown, label: string): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new ConfigError(`${label} must be a positive integer`);
+  }
+  return value;
 }
 
 function validatePrivacyPatterns(

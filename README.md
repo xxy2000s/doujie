@@ -110,6 +110,15 @@ feishu:
   bot_mention_names:
     - 飞书 CLI
     - 豆姐
+  # Optional: poll edited group messages because Feishu may not push edit events.
+  # Use an identity that can read chat history for these groups.
+  edit_polling:
+    enabled: false
+    chat_ids:
+      - oc_your_group_chat_id
+    as: user
+    interval_ms: 10000
+    page_size: 20
 
 storage:
   db_path: ~/.doujie/data.db

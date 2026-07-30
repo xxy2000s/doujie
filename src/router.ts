@@ -7,6 +7,7 @@ import type {
   ProcessingMode,
   PrivacyConfig,
 } from './types.js';
+import crypto from 'node:crypto';
 import type { Store } from './store.js';
 import { replyToMessage, replyError, replyText, type StatusCardParams } from './reply.js';
 import type { ReactionEmoji } from './reaction.js';
@@ -44,6 +45,7 @@ import {
 } from './qa.js';
 import { AgentSessionIntentController, type AgentSessionIntentResult } from './agent-session-intent.js';
 import { HeadlessAgentRunner } from './headless-agent-runner.js';
+import { MESSAGE_RECEIVE_EVENT, MESSAGE_UPDATED_EVENTS } from './listener.js';
 
 type AIPipelineLike = {
   process(text: string): Promise<AIResult>;
@@ -193,23 +195,47 @@ export class Router {
         ? { ...message, text: privacyDecision.safeText, rawContent: privacyDecision.safeText }
         : { ...message, text: privacyDecision.text, rawContent: privacyDecision.rawContent };
 
-    // Dedup check: try to save, skip if duplicate
-    const saved = this.store.saveMessage({
-      id: messageId,
-      chatId: messageToSave.chatId,
-      senderId: messageToSave.senderId,
-      content: messageToSave.text,
-      messageType: messageToSave.messageType,
-      rawEvent: privacyDecision.rawEvent,
-    });
+    const eventType = event.header?.event_type ?? '';
+    const isEditedMessage = this.isMessageUpdatedEvent(eventType);
+    if (isEditedMessage) {
+      this.store.saveEditedMessage({
+        id: messageId,
+        chatId: messageToSave.chatId,
+        senderId: messageToSave.senderId,
+        content: messageToSave.text,
+        messageType: messageToSave.messageType,
+        rawEvent: privacyDecision.rawEvent,
+      });
+      const versionKey = this.getMessageEventVersionKey(event, messageToSave);
+      const isNewVersion = this.store.recordMessageEventVersion(messageId, eventType, versionKey);
+      if (!isNewVersion) {
+        console.log('[router] Duplicate message edit skipped:', messageId, versionKey);
+        return;
+      }
+    } else {
+      // Dedup check: try to save, skip if duplicate
+      const saved = this.store.saveMessage({
+        id: messageId,
+        chatId: messageToSave.chatId,
+        senderId: messageToSave.senderId,
+        content: messageToSave.text,
+        messageType: messageToSave.messageType,
+        rawEvent: privacyDecision.rawEvent,
+      });
 
-    if (!saved) {
-      console.log('[router] Duplicate message skipped:', messageId);
-      return;
+      if (!saved) {
+        console.log('[router] Duplicate message skipped:', messageId);
+        return;
+      }
     }
 
     if (!this.shouldProcessMessage(messageToSave)) {
-      console.log('[router] Group message stored without bot mention:', messageId);
+      console.log(
+        isEditedMessage
+          ? '[router] Edited group message stored without bot mention:'
+          : '[router] Group message stored without bot mention:',
+        messageId
+      );
       return;
     }
 
@@ -320,6 +346,25 @@ export class Router {
   private isCommand(text: string): boolean {
     // Match / followed by a word character (letter/digit/underscore), not //
     return /^\/[a-zA-Z0-9_]/.test(text) && !text.startsWith('//');
+  }
+
+  private isMessageUpdatedEvent(eventType: string): boolean {
+    return eventType !== MESSAGE_RECEIVE_EVENT && MESSAGE_UPDATED_EVENTS.includes(eventType as typeof MESSAGE_UPDATED_EVENTS[number]);
+  }
+
+  private getMessageEventVersionKey(event: FeishuEvent, message: MessageContent): string {
+    const updateTime = extractFirstString(event, ['update_time', 'updateTime', 'updated_at', 'updatedAt']);
+    if (updateTime) return `update:${updateTime}`;
+    const hash = crypto
+      .createHash('sha256')
+      .update(JSON.stringify({
+        text: message.text,
+        rawContent: message.rawContent,
+        mentions: message.mentions,
+      }))
+      .digest('hex')
+      .slice(0, 24);
+    return `hash:${hash}`;
   }
 
   private extractMessage(event: FeishuEvent): MessageContent | null {
@@ -1147,4 +1192,26 @@ function normalizeMentionName(name: string): string {
 
 function isMention(value: unknown): value is FeishuMention {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function extractFirstString(value: unknown, keys: string[]): string | null {
+  if (!value || typeof value !== 'object') return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = extractFirstString(item, keys);
+      if (found) return found;
+    }
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of keys) {
+    const direct = record[key];
+    if (typeof direct === 'string' && direct.trim()) return direct.trim();
+    if (typeof direct === 'number') return String(direct);
+  }
+  for (const child of Object.values(record)) {
+    const found = extractFirstString(child, keys);
+    if (found) return found;
+  }
+  return null;
 }

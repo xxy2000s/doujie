@@ -69,6 +69,7 @@ DOUJIE_DB_PATH
 
 - Private chat: process normal messages directly.
 - Group chat: store all messages; only process when the message mentions the configured bot.
+- Edited group messages can be handled by event subscription when available, or by optional `feishu.edit_polling` history polling for configured `feishu.edit_polling.chat_ids`.
 - Group session key: `chatId`.
 - Private session key: `chatId:senderId`.
 - Default mode is Codex chat.

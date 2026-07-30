@@ -12,13 +12,32 @@ export type ListenerStatus = {
   restartCount: number;
 };
 
-export function buildSubscribeArgs(feishuAs: FeishuIdentity): string[] {
-  return [
+export const MESSAGE_RECEIVE_EVENT = 'im.message.receive_v1';
+export const MESSAGE_UPDATED_EVENTS = [
+  'im.message.message_updated_v1',
+  'im.message.updated_v1',
+] as const;
+export const DEFAULT_EVENT_TYPES = [
+  MESSAGE_RECEIVE_EVENT,
+  ...MESSAGE_UPDATED_EVENTS,
+] as const;
+
+const MESSAGE_EVENT_TYPES = new Set<string>(DEFAULT_EVENT_TYPES);
+
+export function buildSubscribeArgs(
+  feishuAs: FeishuIdentity,
+  eventTypes: readonly string[] = DEFAULT_EVENT_TYPES
+): string[] {
+  const args = [
     'event',
     '+subscribe',
     '--as',
     feishuAs,
   ];
+  if (eventTypes.length > 0) {
+    args.push('--event-types', eventTypes.join(','));
+  }
+  return args;
 }
 
 export class EventListener {
@@ -29,6 +48,7 @@ export class EventListener {
   private handler: EventHandler;
   private allowedChatIds: string[];
   private feishuAs: FeishuIdentity;
+  private eventTypes: readonly string[];
   private state: ListenerState = 'stopped';
   private lastEventAt: number | null = null;
   private restartCount = 0;
@@ -36,11 +56,13 @@ export class EventListener {
   constructor(
     handler: EventHandler,
     allowedChatIds: string[],
-    feishuAs: FeishuIdentity = 'bot'
+    feishuAs: FeishuIdentity = 'bot',
+    eventTypes: readonly string[] = DEFAULT_EVENT_TYPES
   ) {
     this.handler = handler;
     this.allowedChatIds = allowedChatIds;
     this.feishuAs = feishuAs;
+    this.eventTypes = eventTypes;
   }
 
   start(): void {
@@ -71,7 +93,7 @@ export class EventListener {
 
     console.log('[listener] Starting lark-cli event +subscribe...');
     this.state = this.restartCount > 0 ? 'restarting' : 'starting';
-    this.process = spawn('lark-cli', buildSubscribeArgs(this.feishuAs), {
+    this.process = spawn('lark-cli', buildSubscribeArgs(this.feishuAs, this.eventTypes), {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -143,7 +165,7 @@ export class EventListener {
       return;
     }
 
-    if (event.header?.event_type !== 'im.message.receive_v1') {
+    if (!MESSAGE_EVENT_TYPES.has(event.header?.event_type)) {
       return;
     }
     this.lastEventAt = Date.now();

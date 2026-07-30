@@ -10,7 +10,7 @@ import type {
   SourceRecord,
 } from './types.js';
 
-export const CURRENT_SCHEMA_VERSION = 9;
+export const CURRENT_SCHEMA_VERSION = 10;
 
 type Migration = {
   version: number;
@@ -402,6 +402,21 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 10,
+    name: 'create_message_event_versions',
+    up(db: Database.Database): void {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS message_event_versions (
+          message_id TEXT NOT NULL REFERENCES messages(id),
+          event_type TEXT NOT NULL,
+          version_key TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (message_id, event_type, version_key)
+        );
+      `);
+    },
+  },
 ];
 
 export class Store {
@@ -501,6 +516,51 @@ export class Store {
     if (result.changes > 0) {
       this.syncSearchIndex(params.id);
     }
+    return result.changes > 0;
+  }
+
+  /** Insert or update a message from a message-edited event. */
+  saveEditedMessage(params: {
+    id: string;
+    chatId: string;
+    senderId: string;
+    content: string;
+    messageType: string;
+    rawEvent: string;
+  }): void {
+    const now = this.clock();
+    this.db.prepare(`
+      INSERT INTO messages (id, chat_id, sender_id, content, message_type, raw_event, received_at)
+      VALUES (@id, @chatId, @senderId, @content, @messageType, @rawEvent, @receivedAt)
+      ON CONFLICT(id) DO UPDATE SET
+        chat_id = excluded.chat_id,
+        sender_id = excluded.sender_id,
+        content = excluded.content,
+        message_type = excluded.message_type,
+        raw_event = excluded.raw_event
+    `).run({
+      id: params.id,
+      chatId: params.chatId,
+      senderId: params.senderId,
+      content: params.content,
+      messageType: params.messageType,
+      rawEvent: params.rawEvent,
+      receivedAt: now,
+    });
+    this.syncSearchIndex(params.id);
+  }
+
+  /** Return true only the first time a message event version is seen. */
+  recordMessageEventVersion(messageId: string, eventType: string, versionKey: string): boolean {
+    const result = this.db.prepare(`
+      INSERT OR IGNORE INTO message_event_versions (message_id, event_type, version_key, created_at)
+      VALUES (@messageId, @eventType, @versionKey, @createdAt)
+    `).run({
+      messageId,
+      eventType,
+      versionKey,
+      createdAt: this.clock(),
+    });
     return result.changes > 0;
   }
 

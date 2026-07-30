@@ -133,6 +133,40 @@ function resourceEvent(params: {
   };
 }
 
+function editedTextEvent(params: {
+  messageId: string;
+  text: string;
+  chatId?: string;
+  chatType?: string;
+  senderId?: string;
+  updateTime?: string;
+  mentions?: FeishuEvent['event']['message']['mentions'];
+}): FeishuEvent {
+  const sender = { sender_id: { open_id: params.senderId ?? 'ou_test' } };
+  return {
+    schema: '2.0',
+    header: {
+      event_id: `event-${params.messageId}-${params.updateTime ?? 'edit'}`,
+      event_type: 'im.message.message_updated_v1',
+      create_time: '1783530000000',
+    },
+    event: {
+      sender,
+      message: {
+        message_id: params.messageId,
+        chat_id: params.chatId ?? 'oc_test',
+        chat_type: params.chatType ?? 'p2p',
+        sender,
+        message_type: 'text',
+        content: JSON.stringify({ text: params.text }),
+        update_time: params.updateTime,
+        updated: true,
+        ...(params.mentions ? { mentions: params.mentions } : {}),
+      },
+    },
+  };
+}
+
 function createAttachmentDownloader(
   result: (attachment: AttachmentMeta) => AttachmentDownloadResult
 ): AttachmentDownloader {
@@ -688,6 +722,117 @@ test('Router stores group messages without bot mention but does not process them
     assert.deepEqual(reaction.reactions, []);
     assert.equal(store.getMessageContent('group-no-mention-1'), '普通群聊消息');
     assert.equal(store.getProcessingJob('group-no-mention-1'), null);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router stores edited group messages without bot mention but does not process them', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-edited-group-no-mention');
+  const store = new Store(dbPath, () => 1175);
+  const reply = createFakeReply();
+  const codex = createFakeCodexChatRunner(['should not run']);
+  const aiPipeline = {
+    async process(_text: string): Promise<AIResult> {
+      throw new Error('AI digest should not run for edited group messages without mention');
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    aiPipeline,
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    codex.runner,
+    {
+      model: '',
+      workdir: dir,
+      sandbox: 'workspace-write',
+      skipGitRepoCheck: true,
+    },
+    'codex_chat',
+    null,
+    { ids: ['cli_bot'], names: ['Doujie'] }
+  );
+  try {
+    await router.handleEvent(editedTextEvent({
+      messageId: 'edited-group-no-mention-1',
+      text: '编辑后仍然没有 mention',
+      chatId: 'oc_group',
+      chatType: 'group',
+      updateTime: '1783530001000',
+    }));
+
+    assert.deepEqual(codex.prompts, []);
+    assert.deepEqual(reply.texts, []);
+    assert.equal(store.getMessageContent('edited-group-no-mention-1'), '编辑后仍然没有 mention');
+    assert.equal(store.getProcessingJob('edited-group-no-mention-1'), null);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router processes an edited group message after it mentions the bot', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-edited-group-mention');
+  const store = new Store(dbPath, () => 1178);
+  const reply = createFakeReply();
+  const reaction = createFakeReaction();
+  const codex = createFakeCodexChatRunner(['edited group reply']);
+  const aiPipeline = {
+    async process(_text: string): Promise<AIResult> {
+      throw new Error('AI digest should not run for edited mentioned group Codex messages');
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    aiPipeline,
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    codex.runner,
+    {
+      model: '',
+      workdir: dir,
+      sandbox: 'workspace-write',
+      skipGitRepoCheck: true,
+    },
+    'codex_chat',
+    reaction.client,
+    { ids: ['cli_bot'], names: ['Doujie'] }
+  );
+  const event = editedTextEvent({
+    messageId: 'edited-group-mention-1',
+    text: '@Doujie 编辑后请回复 OK',
+    chatId: 'oc_group',
+    chatType: 'group',
+    updateTime: '1783530002000',
+    mentions: [{ key: '@Doujie', name: 'Doujie', id: { app_id: 'cli_bot' } }],
+  });
+  try {
+    await router.handleEvent(event);
+    await router.handleEvent(event);
+
+    assert.deepEqual(codex.prompts, ['编辑后请回复 OK']);
+    assert.equal(codex.options[0]?.sessionKey, 'oc_group');
+    assert.deepEqual(reply.texts.map((item) => item.text), ['edited group reply']);
+    assert.deepEqual(reaction.reactions, [
+      { messageId: 'edited-group-mention-1', emojiType: 'THINKING' },
+      { messageId: 'edited-group-mention-1', emojiType: 'DONE' },
+    ]);
+    assert.equal(store.getMessageContent('edited-group-mention-1'), '编辑后请回复 OK');
+    assert.equal(store.getProcessingJob('edited-group-mention-1')?.mode, 'codex_chat');
   } finally {
     store.close();
     removeTempDir(dir);

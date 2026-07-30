@@ -26,6 +26,9 @@ test('buildConfig accepts valid YAML and environment overrides', () => {
   assert.equal(config.feishu.as, 'user');
   assert.deepEqual(config.feishu.botMentionIds, ['cli_bot']);
   assert.deepEqual(config.feishu.botMentionNames, ['豆姐']);
+  assert.equal(config.feishu.editPolling.enabled, false);
+  assert.deepEqual(config.feishu.editPolling.chatIds, []);
+  assert.equal(config.feishu.editPolling.as, 'user');
   assert.equal(config.storage.dbPath, '/tmp/doujie-test.db');
   assert.match(config.storage.backupDir, /backups$/);
   assert.match(config.storage.exportDir, /exports$/);
@@ -70,6 +73,27 @@ test('buildConfig accepts bot mention environment lists', () => {
 
   assert.deepEqual(config.feishu.botMentionIds, ['cli_1', 'ou_2']);
   assert.deepEqual(config.feishu.botMentionNames, ['豆姐', 'Codex']);
+});
+
+test('buildConfig accepts edited-message polling config', () => {
+  const config = buildConfig({
+    feishu: {
+      as: 'bot',
+      edit_polling: {
+        enabled: true,
+        chat_ids: ['oc_poll'],
+        as: 'user',
+        interval_ms: 3000,
+        page_size: 12,
+      },
+    },
+  }, {});
+
+  assert.equal(config.feishu.editPolling.enabled, true);
+  assert.deepEqual(config.feishu.editPolling.chatIds, ['oc_poll']);
+  assert.equal(config.feishu.editPolling.as, 'user');
+  assert.equal(config.feishu.editPolling.intervalMs, 3000);
+  assert.equal(config.feishu.editPolling.pageSize, 12);
 });
 
 test('buildConfig accepts control session directory override', () => {

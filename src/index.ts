@@ -2,6 +2,7 @@ import { loadConfig } from './config.js';
 import { runStartupDoctor } from './doctor.js';
 import { Store } from './store.js';
 import { EventListener } from './listener.js';
+import { EditedMessagePoller } from './edited-message-poller.js';
 import { AIPipeline } from './ai/pipeline.js';
 import { AnswerPipeline } from './ai/answer-pipeline.js';
 import { Router } from './router.js';
@@ -113,6 +114,15 @@ async function main(): Promise<void> {
   listener.start();
   console.log('[doujie] Listener started. Waiting for Feishu events...');
 
+  const editedMessagePoller = config.feishu.editPolling.enabled
+    ? new EditedMessagePoller(eventHandler, config.feishu.editPolling.chatIds, {
+        feishuAs: config.feishu.editPolling.as,
+        intervalMs: config.feishu.editPolling.intervalMs,
+        pageSize: config.feishu.editPolling.pageSize,
+      })
+    : null;
+  editedMessagePoller?.start();
+
   // Graceful shutdown
   let shuttingDown = false;
   const shutdown = async (): Promise<void> => {
@@ -121,6 +131,7 @@ async function main(): Promise<void> {
 
     console.log('\n[doujie] Shutting down...');
     listener.stop();
+    editedMessagePoller?.stop();
 
     // Wait for in-flight messages
     const timeout = setTimeout(() => {

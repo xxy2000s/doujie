@@ -24,6 +24,8 @@ export interface FeishuEvent {
       message_type: string;
       content: string;
       mentions?: FeishuMention[];
+      update_time?: string;
+      updated?: boolean;
     };
   };
 }
@@ -180,6 +182,13 @@ export interface AppConfig {
     as: FeishuIdentity;
     botMentionIds: string[];
     botMentionNames: string[];
+    editPolling: {
+      enabled: boolean;
+      chatIds: string[];
+      as: FeishuIdentity;
+      intervalMs: number;
+      pageSize: number;
+    };
   };
   storage: {
     dbPath: string;
