@@ -27,7 +27,9 @@ import { extractAttachments, type AttachmentDownloader } from './attachments.js'
 import type { AttachmentExtractor } from './attachment-extractor.js';
 import type { AnswerResult } from './ai/answer-processor.js';
 import {
+  CodexChatInterruptedError,
   clearCodexSession,
+  isCodexChatInterruptedError,
   runCodexChat,
   type CodexChatOptions,
   type CodexChatResult,
@@ -104,7 +106,13 @@ type CodexStatusCardHandle = {
   stop(): void;
   markOutputStarted(): void;
   finish(sessionId: string | null, hadOutput: boolean): Promise<void>;
+  interrupt(reason: string): Promise<void>;
   fail(error: Error): Promise<void>;
+};
+
+type ActiveCodexTurn = {
+  messageId: string;
+  controller: AbortController;
 };
 
 export class Router {
@@ -123,6 +131,7 @@ export class Router {
   private codexChatOptions: Omit<CodexChatOptions, 'sessionKey'>;
   private defaultMessageMode: DefaultMessageMode;
   private botMentionConfig: BotMentionConfig;
+  private activeCodexTurns = new Map<string, ActiveCodexTurn>();
 
   constructor(
     commands: Map<string, CommandHandler>,
@@ -691,6 +700,7 @@ export class Router {
 
   private async handleNewCommand(message: MessageContent, args: string): Promise<void> {
     const sessionKey = this.getCodexSessionKey(message);
+    this.interruptActiveCodexTurn(sessionKey);
     clearCodexSession(sessionKey, this.codexChatOptions.stateFile);
     deactivateControlSession(sessionKey, this.codexChatOptions.controlSessionDir);
     const prompt = args.trim();
@@ -715,6 +725,8 @@ export class Router {
     this.store.setProcessingMode(message.messageId, 'codex_chat');
     this.store.markProcessing(message.messageId, 'codex_chat');
     await this.addStatusReaction(message.messageId, 'THINKING');
+    const sessionKey = this.getCodexSessionKey(message);
+    const turn = this.startCodexTurn(sessionKey, message.messageId);
     if (detailed) {
       await this.replyClient.replyText(message.messageId, 'Codex 已开始处理。');
     }
@@ -726,10 +738,14 @@ export class Router {
         prompt,
         {
           ...this.codexChatOptions,
-          sessionKey: this.getCodexSessionKey(message),
+          sessionKey,
           outputMode: detailed ? 'detail' : 'answer',
+          abortSignal: turn.controller.signal,
         },
         async (chunk: string): Promise<void> => {
+          if (turn.controller.signal.aborted) {
+            throw new CodexChatInterruptedError();
+          }
           chunksSent += 1;
           if (statusCard) {
             statusCard.markOutputStarted();
@@ -754,14 +770,48 @@ export class Router {
       }
       await this.addStatusReaction(message.messageId, 'DONE');
     } catch (err) {
+      if (isCodexChatInterruptedError(err) || turn.controller.signal.aborted) {
+        statusCard?.stop();
+        await statusCard?.interrupt('被同一会话中的新消息打断。').catch((cardErr: Error) => {
+          console.error('[router] Failed to update status card after interrupt:', cardErr.message);
+        });
+        this.store.markProcessing(message.messageId, 'interrupted');
+        await this.replyClient.replyText(message.messageId, '已被新消息打断，正在处理最新消息。').catch((replyErr: Error) => {
+          console.error('[router] Failed to send interrupt notice:', replyErr.message);
+        });
+        this.store.markReplied(message.messageId);
+        return;
+      }
       statusCard?.stop();
       await statusCard?.fail(err as Error).catch((cardErr: Error) => {
         console.error('[router] Failed to update status card after error:', cardErr.message);
       });
       await this.addStatusReaction(message.messageId, 'ERROR');
       throw err;
+    } finally {
+      this.finishCodexTurn(sessionKey, turn);
     }
     this.store.markReplied(message.messageId);
+  }
+
+  private startCodexTurn(sessionKey: string, messageId: string): ActiveCodexTurn {
+    this.interruptActiveCodexTurn(sessionKey);
+    const turn = { messageId, controller: new AbortController() };
+    this.activeCodexTurns.set(sessionKey, turn);
+    return turn;
+  }
+
+  private interruptActiveCodexTurn(sessionKey: string): void {
+    const active = this.activeCodexTurns.get(sessionKey);
+    if (!active || active.controller.signal.aborted) return;
+    console.log('[router] Interrupting active Codex chat:', active.messageId);
+    active.controller.abort();
+  }
+
+  private finishCodexTurn(sessionKey: string, turn: ActiveCodexTurn): void {
+    if (this.activeCodexTurns.get(sessionKey) === turn) {
+      this.activeCodexTurns.delete(sessionKey);
+    }
   }
 
   private getCodexSessionKey(message: MessageContent): string {
@@ -838,6 +888,17 @@ export class Router {
           stage: hadOutput ? '正文已发送完成' : '没有可显示输出',
           elapsedMs: Date.now() - startedAt,
           sessionId,
+        });
+      },
+      async interrupt(reason: string): Promise<void> {
+        stop();
+        if (!updateStatusCard) return;
+        await updateStatusCard(statusMessageId, {
+          state: 'error',
+          title: '豆姐已中断',
+          stage: '被新消息打断',
+          elapsedMs: Date.now() - startedAt,
+          detail: reason,
         });
       },
       async fail(error: Error): Promise<void> {

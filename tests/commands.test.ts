@@ -55,13 +55,13 @@ test('status command reports runtime and job counts', async () => {
     const commands = createCommandRegistry(store, createRuntime(dbPath));
     const result = await commands.get('status')?.('', dummyMessage);
 
-    assert.match(result ?? '', /Doujie Status/);
-    assert.match(result ?? '', /Listener: running/);
-    assert.match(result ?? '', /Restarts: 2/);
-    assert.match(result ?? '', /In-flight: 1/);
+    assert.match(result ?? '', /豆姐状态/);
+    assert.match(result ?? '', /\*\*Listener:\*\* running/);
+    assert.match(result ?? '', /\*\*Restarts:\*\* 2/);
+    assert.match(result ?? '', /\*\*In-flight:\*\* 1/);
     assert.match(result ?? '', /replied:1/);
-    assert.match(result ?? '', /Modes: default:1/);
-    assert.match(result ?? '', /Search: fts=/);
+    assert.match(result ?? '', /\*\*Modes:\*\* default:1/);
+    assert.match(result ?? '', /\*\*Search:\*\* fts=/);
   } finally {
     store.close();
     removeTempDir(dir);
@@ -80,7 +80,9 @@ test('help command is generated from command metadata', async () => {
       assert.match(result ?? '', new RegExp(`/${definition.usage.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
       assert.match(result ?? '', new RegExp(definition.description.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
-    assert.match(result ?? '', /Default behavior/);
+    assert.match(result ?? '', /私聊和群聊 @豆姐/);
+    assert.match(result ?? '', /会话控制/);
+    assert.match(result ?? '', /运行状态/);
   } finally {
     store.close();
     removeTempDir(dir);
@@ -114,12 +116,58 @@ test('sessions command reports Doujie control sessions', async () => {
   );
   try {
     const commands = createCommandRegistry(store, runtime);
-    const result = await commands.get('sessions')?.('', dummyMessage);
+    const result = await commands.get('sessions')?.('', {
+      ...dummyMessage,
+      chatId: 'oc_group',
+      chatType: 'group',
+    });
 
-    assert.match(result ?? '', /Control session dir:/);
-    assert.match(result ?? '', /oc_group \[active\]/);
+    assert.match(result ?? '', /Codex Sessions/);
+    assert.match(result ?? '', /Control dir/);
+    assert.match(result ?? '', /oc_group \[active current\]/);
     assert.match(result ?? '', /session-1/);
     assert.match(result ?? '', /\/repo\/control/);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('session command reports the current Feishu session binding', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-current-session-command');
+  const store = new Store(dbPath, () => 1700);
+  const runtime = createRuntime(dbPath);
+  fs.mkdirSync(runtime.controlSessionDir, { recursive: true });
+  fs.writeFileSync(
+    `${runtime.controlSessionDir}/index.json`,
+    JSON.stringify({
+      version: 1,
+      updatedAt: '2026-07-30T00:00:00.000Z',
+      sessions: {
+        'chat:sender': {
+          sessionKey: 'chat:sender',
+          sessionId: '019f-current-session',
+          workdir: '/Users/xiaxu/service/doujie',
+          codexJsonlPath: '/Users/xiaxu/.codex/sessions/current.jsonl',
+          linkPath: `${runtime.controlSessionDir}/links/chat_user.jsonl`,
+          active: true,
+          firstSeenAt: '2026-07-30T00:00:00.000Z',
+          updatedAt: '2026-07-30T00:00:00.000Z',
+        },
+      },
+    }),
+    'utf-8'
+  );
+  try {
+    const commands = createCommandRegistry(store, runtime);
+    const result = await commands.get('session')?.('', dummyMessage);
+
+    assert.match(result ?? '', /当前 Codex Session/);
+    assert.match(result ?? '', /chat:sender/);
+    assert.match(result ?? '', /019f-current-session/);
+    assert.match(result ?? '', /\/Users\/xiaxu\/service\/doujie/);
+    assert.match(result ?? '', /\*\*Project:\*\* doujie/);
+    assert.match(result ?? '', /current\.jsonl/);
   } finally {
     store.close();
     removeTempDir(dir);
@@ -142,9 +190,10 @@ test('recent command returns bounded message previews', async () => {
     const commands = createCommandRegistry(store, createRuntime(dbPath));
     const result = await commands.get('recent')?.('1', dummyMessage);
 
+    assert.match(result ?? '', /最近消息/);
     assert.match(result ?? '', /recent-1/);
-    assert.match(result ?? '', /\[text\]/);
-    assert.doesNotMatch(result ?? '', /No recent messages/);
+    assert.match(result ?? '', /\*\*Type:\*\* text/);
+    assert.doesNotMatch(result ?? '', /没有最近消息/);
   } finally {
     store.close();
     removeTempDir(dir);
@@ -202,9 +251,9 @@ test('search command supports filters and renders sources', async () => {
     const commands = createCommandRegistry(store, createRuntime(dbPath));
     const result = await commands.get('search')?.('alpha tag:技术 source:example.com limit:1', dummyMessage);
 
-    assert.match(result ?? '', /Search results/);
+    assert.match(result ?? '', /搜索结果/);
     assert.match(result ?? '', /alpha source note/);
-    assert.match(result ?? '', /Sources: example.com/);
+    assert.match(result ?? '', /\*\*Sources:\*\* example.com/);
     assert.doesNotMatch(result ?? '', /other summary/);
   } finally {
     store.close();
@@ -289,10 +338,11 @@ test('errors command returns failed job diagnostics', async () => {
     const commands = createCommandRegistry(store, createRuntime(dbPath));
     const result = await commands.get('errors')?.('5', dummyMessage);
 
+    assert.match(result ?? '', /最近错误/);
     assert.match(result ?? '', /failed-1/);
-    assert.match(result ?? '', /mode=default/);
-    assert.match(result ?? '', /stage=codex/);
-    assert.match(result ?? '', /retries=1/);
+    assert.match(result ?? '', /\*\*Mode:\*\* default/);
+    assert.match(result ?? '', /\*\*Stage:\*\* codex/);
+    assert.match(result ?? '', /\*\*Retries:\*\* 1/);
     assert.match(result ?? '', /codex exploded/);
   } finally {
     store.close();

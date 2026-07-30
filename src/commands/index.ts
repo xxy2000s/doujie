@@ -7,7 +7,7 @@ import { createStatusHandler } from './status.js';
 import { createRecentHandler } from './recent.js';
 import { createErrorsHandler } from './errors.js';
 import { createBackupHandler, createCleanupHandler, createExportHandler } from './maintenance.js';
-import { createSessionsHandler } from './sessions.js';
+import { createSessionHandler, createSessionsHandler } from './sessions.js';
 
 export type CommandRuntime = {
   startedAt: number;
@@ -144,6 +144,12 @@ export function createCommandDefinitions(
       usage: 'sessions',
       description: 'Show Doujie control-plane Codex sessions',
       handler: createSessionsHandler(runtime),
+    },
+    {
+      name: 'session',
+      usage: 'session',
+      description: 'Show the current Feishu chat Codex session binding',
+      handler: createSessionHandler(runtime),
     },
     {
       name: 'backup',

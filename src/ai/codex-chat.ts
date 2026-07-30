@@ -18,11 +18,23 @@ export type CodexChatOptions = {
   controlSessionDir?: string;
   flushChars?: number;
   flushIntervalMs?: number;
+  abortSignal?: AbortSignal;
 };
 
 export type CodexChatResult = {
   sessionId: string | null;
 };
+
+export class CodexChatInterruptedError extends Error {
+  constructor(message = 'Codex chat interrupted by a newer message') {
+    super(message);
+    this.name = 'CodexChatInterruptedError';
+  }
+}
+
+export function isCodexChatInterruptedError(error: unknown): error is CodexChatInterruptedError {
+  return error instanceof CodexChatInterruptedError;
+}
 
 type SessionState = {
   sessions?: Record<string, string>;
@@ -158,6 +170,9 @@ export async function runCodexChat(
   if (!fs.existsSync(options.workdir)) {
     throw new Error(`Codex workdir does not exist: ${options.workdir}`);
   }
+  if (options.abortSignal?.aborted) {
+    throw new CodexChatInterruptedError();
+  }
 
   const statePath = options.stateFile ?? DEFAULT_STATE_FILE;
   const state = loadSessionState(statePath);
@@ -166,12 +181,28 @@ export async function runCodexChat(
   const proc = spawn('codex', args, {
     cwd: options.workdir,
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
   });
 
   let stderr = '';
   let sessionId = previousSessionId;
   let lineBuffer = '';
   let pendingSend = Promise.resolve();
+  let aborted = false;
+  let forceKillTimer: NodeJS.Timeout | null = null;
+
+  const abort = (): void => {
+    aborted = true;
+    terminateProcessTree(proc.pid, 'SIGTERM');
+    forceKillTimer = setTimeout(() => {
+      terminateProcessTree(proc.pid, 'SIGKILL');
+    }, 3000);
+    forceKillTimer.unref();
+  };
+  options.abortSignal?.addEventListener('abort', abort, { once: true });
+  if (options.abortSignal?.aborted) {
+    abort();
+  }
 
   function queueChunk(text: string): void {
     const normalized = text.trim();
@@ -204,12 +235,29 @@ export async function runCodexChat(
     stderr += chunk.toString();
   });
 
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    proc.on('error', reject);
-    proc.on('close', resolve);
-  });
-  await stdoutDone;
-  await pendingSend;
+  let exitCode: number | null;
+  try {
+    exitCode = await new Promise<number | null>((resolve, reject) => {
+      proc.on('error', reject);
+      proc.on('close', resolve);
+    });
+    await stdoutDone;
+    await pendingSend;
+  } catch (err) {
+    if (aborted || options.abortSignal?.aborted || isCodexChatInterruptedError(err)) {
+      throw new CodexChatInterruptedError();
+    }
+    throw err;
+  } finally {
+    options.abortSignal?.removeEventListener('abort', abort);
+    if (forceKillTimer) {
+      clearTimeout(forceKillTimer);
+    }
+  }
+
+  if (aborted || options.abortSignal?.aborted) {
+    throw new CodexChatInterruptedError();
+  }
 
   if (exitCode !== 0) {
     throw new Error(`codex exited with code ${exitCode}: ${stderr.trim() || 'no stderr'}`);
@@ -233,6 +281,23 @@ export async function runCodexChat(
       }
     } catch {
       queueChunk(trimmed);
+    }
+  }
+}
+
+function terminateProcessTree(pid: number | undefined, signal: NodeJS.Signals): void {
+  if (!pid) return;
+  try {
+    if (process.platform === 'win32') {
+      process.kill(pid, signal);
+      return;
+    }
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // Process already exited.
     }
   }
 }

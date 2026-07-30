@@ -1,5 +1,6 @@
 import type { CommandHandler, MessageContent } from '../types.js';
 import type { SearchMessagesOptions, Store } from '../store.js';
+import { commandSection, commandTitle, compact, field, joinBlocks, numbered, shortId } from './format.js';
 
 type ParsedSearch =
   | { ok: true; options: SearchMessagesOptions; label: string }
@@ -72,17 +73,23 @@ export function createSearchHandler(store: Store): CommandHandler {
 
     const results = store.searchMessages(parsed.options);
     if (results.length === 0) {
-      return `No results found for ${parsed.label}.`;
+      return joinBlocks([commandTitle('搜索结果', parsed.label), '没有找到匹配消息。']);
     }
 
-    const lines = results.map((r, i) => {
-      const summary = r.summary ? `\n  Summary: ${r.summary.slice(0, 100)}` : '';
-      const tags = r.tags ? `\n  Tags: ${r.tags}` : '';
-      const sources = r.sources ? `\n  Sources: ${r.sources}` : '';
+    const lines = results.map((r, index) => {
       const date = new Date(r.receivedAt).toLocaleString();
-      return `${i + 1}. [${date}] ${r.content.slice(0, 80)}${summary}${tags}${sources}`;
-    });
+      return numbered(index + 1, compact(r.content, 82), [
+        field('ID', `\`${shortId(r.id)}\``),
+        field('Time', date),
+        r.summary ? field('Summary', compact(r.summary, 100)) : '',
+        r.tags ? field('Tags', r.tags) : '',
+        r.sources ? field('Sources', compact(r.sources, 110)) : '',
+      ]);
+    }).join('\n');
 
-    return `Search results for ${parsed.label} (${results.length} found):\n\n${lines.join('\n\n')}`;
+    return joinBlocks([
+      commandTitle('搜索结果', `${parsed.label} - ${results.length} 条`),
+      commandSection('列表', [lines]),
+    ]);
   };
 }

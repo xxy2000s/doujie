@@ -6,7 +6,7 @@ import { createCommandRegistry } from '../src/commands/index.js';
 import type { AttachmentDownloader, AttachmentMeta, AttachmentDownloadResult } from '../src/attachments.js';
 import type { AttachmentExtractor } from '../src/attachment-extractor.js';
 import type { AnswerResult } from '../src/ai/answer-processor.js';
-import type { CodexChatOptions, CodexChatResult } from '../src/ai/codex-chat.js';
+import { CodexChatInterruptedError, type CodexChatOptions, type CodexChatResult } from '../src/ai/codex-chat.js';
 import type { FetchedUrl } from '../src/fetcher.js';
 import { Router, type CodexChatRunnerLike, type ReactionClient, type ReplyClient, type UrlFetcher } from '../src/router.js';
 import { Store } from '../src/store.js';
@@ -175,6 +175,22 @@ type FakeCodexChatRunner = {
   runner: CodexChatRunnerLike;
 };
 
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: Error): void;
+};
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function createFakeCodexChatRunner(chunks: string[]): FakeCodexChatRunner {
   const fake: FakeCodexChatRunner = {
     prompts: [],
@@ -191,6 +207,48 @@ function createFakeCodexChatRunner(chunks: string[]): FakeCodexChatRunner {
           await onChunk(chunk);
         }
         return { sessionId: 'session-1' };
+      },
+    },
+  };
+  return fake;
+}
+
+type InterruptibleCodexChatRunner = FakeCodexChatRunner & {
+  firstStarted: Promise<void>;
+  abortedPrompts: string[];
+};
+
+function createInterruptibleCodexChatRunner(): InterruptibleCodexChatRunner {
+  const firstStarted = createDeferred<void>();
+  const fake: InterruptibleCodexChatRunner = {
+    prompts: [],
+    options: [],
+    firstStarted: firstStarted.promise,
+    abortedPrompts: [],
+    runner: {
+      async run(
+        prompt: string,
+        options: CodexChatOptions,
+        onChunk: (text: string) => Promise<void>
+      ): Promise<CodexChatResult> {
+        fake.prompts.push(prompt);
+        fake.options.push(options);
+        if (prompt === 'first task') {
+          firstStarted.resolve();
+          return new Promise<CodexChatResult>((_resolve, reject) => {
+            const abort = (): void => {
+              fake.abortedPrompts.push(prompt);
+              reject(new CodexChatInterruptedError());
+            };
+            if (options.abortSignal?.aborted) {
+              abort();
+              return;
+            }
+            options.abortSignal?.addEventListener('abort', abort, { once: true });
+          });
+        }
+        await onChunk(`reply for ${prompt}`);
+        return { sessionId: `session-${prompt}` };
       },
     },
   };
@@ -219,7 +277,7 @@ test('Router dispatches commands through injected reply client', async () => {
 
     assert.equal(reply.texts.length, 1);
     assert.equal(reply.texts[0]?.messageId, 'cmd-1');
-    assert.match(reply.texts[0]?.text ?? '', /Available commands/);
+    assert.match(reply.texts[0]?.text ?? '', /豆姐命令/);
     assert.equal(reply.summaries.length, 0);
   } finally {
     store.close();
@@ -337,6 +395,86 @@ test('Router handles /codex as a streaming Codex chat command', async () => {
     const job = store.getProcessingJob('codex-1');
     assert.equal(job?.status, 'replied');
     assert.equal(job?.mode, 'codex_chat');
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router interrupts an active Codex chat when a newer message uses the same session', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-codex-interrupt');
+  const store = new Store(dbPath, () => 1130);
+  const reply = createFakeReplyWithStatusCards();
+  const reaction = createFakeReaction();
+  const codex = createInterruptibleCodexChatRunner();
+  const aiPipeline = {
+    async process(_text: string): Promise<AIResult> {
+      throw new Error('AI digest should not run for mentioned group Codex messages');
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    aiPipeline,
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    codex.runner,
+    {
+      model: 'test-model',
+      workdir: dir,
+      sandbox: 'workspace-write',
+      skipGitRepoCheck: true,
+    },
+    'codex_chat',
+    reaction.client,
+    { ids: ['cli_bot'], names: ['Doujie'] }
+  );
+  try {
+    const first = router.handleEvent(textEvent({
+      messageId: 'interrupt-1',
+      text: '@Doujie first task',
+      chatId: 'oc_group',
+      chatType: 'group',
+      mentions: [{ key: '@Doujie', name: 'Doujie', id: { app_id: 'cli_bot' } }],
+    }));
+    await codex.firstStarted;
+
+    await router.handleEvent(textEvent({
+      messageId: 'interrupt-2',
+      text: '@Doujie second task',
+      chatId: 'oc_group',
+      chatType: 'group',
+      mentions: [{ key: '@Doujie', name: 'Doujie', id: { app_id: 'cli_bot' } }],
+    }));
+    await first;
+
+    assert.deepEqual(codex.prompts, ['first task', 'second task']);
+    assert.deepEqual(codex.abortedPrompts, ['first task']);
+    assert.equal(codex.options[0]?.abortSignal?.aborted, true);
+    assert.equal(codex.options[1]?.abortSignal?.aborted, false);
+    assert.deepEqual(
+      reply.texts
+        .map((item) => ({ messageId: item.messageId, text: item.text }))
+        .sort((a, b) => a.messageId.localeCompare(b.messageId)),
+      [
+        { messageId: 'interrupt-1', text: '已被新消息打断，正在处理最新消息。' },
+        { messageId: 'interrupt-2', text: 'reply for second task' },
+      ]
+    );
+    assert.equal(reply.statusUpdates.find((item) => item.messageId === 'card-interrupt-1')?.params.stage, '被新消息打断');
+    assert.equal(reply.statusUpdates.find((item) => item.messageId === 'card-interrupt-2')?.params.stage, '正文已发送完成');
+    assert.deepEqual(reaction.reactions, [
+      { messageId: 'interrupt-1', emojiType: 'THINKING' },
+      { messageId: 'interrupt-2', emojiType: 'THINKING' },
+      { messageId: 'interrupt-2', emojiType: 'DONE' },
+    ]);
+    assert.equal(store.getProcessingJob('interrupt-1')?.status, 'replied');
+    assert.equal(store.getProcessingJob('interrupt-2')?.status, 'replied');
   } finally {
     store.close();
     removeTempDir(dir);

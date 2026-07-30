@@ -1,6 +1,7 @@
 import type { CommandHandler, MessageContent } from '../types.js';
 import type { Store } from '../store.js';
 import type { CommandRuntime } from './index.js';
+import { commandSection, commandTitle, field, joinBlocks } from './format.js';
 
 function formatDuration(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -30,17 +31,23 @@ export function createStatusHandler(
       ? new Date(listener.lastEventAt).toLocaleString()
       : 'none';
 
-    return [
-      'Doujie Status',
-      `Uptime: ${formatDuration(Date.now() - runtime.startedAt)}`,
-      `Listener: ${listener.state}`,
-      `Last event: ${lastEvent}`,
-      `Restarts: ${listener.restartCount}`,
-      `In-flight: ${runtime.inFlight.size}`,
-      `Jobs: ${countText}`,
-      `Modes: ${modeText}`,
-      `Search: fts=${searchDiagnostics.fts_available ?? 'unknown'} backend=${searchDiagnostics.last_backend ?? 'none'}`,
-      `DB: ${runtime.dbPath}`,
-    ].join('\n');
+    return joinBlocks([
+      commandTitle('豆姐状态'),
+      commandSection('运行', [
+        field('Uptime', formatDuration(Date.now() - runtime.startedAt)),
+        field('Listener', listener.state),
+        field('Last event', lastEvent),
+        field('Restarts', listener.restartCount),
+        field('In-flight', runtime.inFlight.size),
+      ]),
+      commandSection('任务', [
+        field('Jobs', countText),
+        field('Modes', modeText),
+      ]),
+      commandSection('存储', [
+        field('Search', `fts=${searchDiagnostics.fts_available ?? 'unknown'} backend=${searchDiagnostics.last_backend ?? 'none'}`),
+        field('DB', `\`${runtime.dbPath}\``),
+      ]),
+    ]);
   };
 }
