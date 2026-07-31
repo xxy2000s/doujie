@@ -24,6 +24,13 @@ export const DEFAULT_EVENT_TYPES = [
 
 const MESSAGE_EVENT_TYPES = new Set<string>(DEFAULT_EVENT_TYPES);
 
+export function shouldAcceptChatEvent(event: FeishuEvent, allowedChatIds: readonly string[]): boolean {
+  const message = event.event?.message;
+  if (!message || allowedChatIds.length === 0) return true;
+  if (message.chat_type !== 'group') return true;
+  return allowedChatIds.includes(message.chat_id);
+}
+
 export function buildSubscribeArgs(
   feishuAs: FeishuIdentity,
   eventTypes: readonly string[] = DEFAULT_EVENT_TYPES
@@ -170,10 +177,7 @@ export class EventListener {
     }
     this.lastEventAt = Date.now();
 
-    if (
-      this.allowedChatIds.length > 0 &&
-      !this.allowedChatIds.includes(event.event?.message?.chat_id)
-    ) {
+    if (!shouldAcceptChatEvent(event, this.allowedChatIds)) {
       return;
     }
 

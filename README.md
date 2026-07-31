@@ -271,8 +271,5 @@ The latest verified smoke tests were:
 ## Documentation
 
 - [AGENTS.md](./AGENTS.md): rules for AI agents working in this repository.
-- [docs/architecture.md](./docs/architecture.md): architecture and ownership boundaries.
-- [docs/remote-linux-deployment.md](./docs/remote-linux-deployment.md): deploy a brand-new Doujie for a new Feishu account on a remote Linux server (English).
-- [docs/remote-linux-deployment.zh-CN.md](./docs/remote-linux-deployment.zh-CN.md): 全新飞书账号和远程 Linux 服务器部署指南（中文）。
-- [docs/remote-linux-deployment-field-report.zh-CN.md](./docs/remote-linux-deployment-field-report.zh-CN.md): 从源码、服务器到飞书真实 E2E 的部署实战、踩坑复盘和用户配合清单。
-- [docs/operations.md](./docs/operations.md): service, config, session, and E2E procedures.
+- [docs/README.md](./docs/README.md): documentation index grouped by architecture, deployment, and operations.
+- [backlog/README.md](./backlog/README.md): unresolved product and engineering follow-ups with evidence and acceptance criteria.
