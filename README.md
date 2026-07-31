@@ -76,7 +76,7 @@ Natural-language project Agent creation uses a confirmation step before any CLI 
 去 /home/doujie/service/doujie 开个 codex session，叫 doujie-main，让它先熟悉项目
 ```
 
-Doujie replies with a structured draft containing provider, alias, cwd, prompt, and default permission. Reply `确认` to execute or `取消` to discard. Codex sessions default to `workspace-write`; Claude Code sessions default to `default` permission mode.
+Doujie replies with a structured draft containing provider, alias, cwd, prompt, and default permission. Reply `确认` to execute or `取消` to discard. Codex project Agent sessions currently default to `danger-full-access`; Claude Code sessions default to `default` permission mode.
 
 ## Setup
 
@@ -123,6 +123,37 @@ feishu:
 storage:
   db_path: ~/.doujie/data.db
 ```
+
+### Edited Group Mentions
+
+Feishu may not push message-edit events reliably. To support the workflow where a group message is sent first and edited later to mention 豆姐, enable edited-message polling for explicit groups only.
+
+This is intentionally not automatic group discovery. Doujie only polls the group chat IDs listed in `feishu.edit_polling.chat_ids`.
+
+Mock example:
+
+```yaml
+feishu:
+  edit_polling:
+    enabled: true
+    chat_ids:
+      - oc_mock_dev_group_001
+      - oc_mock_ashare_group_002
+      - oc_mock_agent_ops_group_003
+    as: user
+    interval_ms: 10000
+    page_size: 20
+```
+
+Behavior:
+
+- The poller reads recent messages from the configured groups with the configured identity.
+- Messages marked `updated: true` are considered, then unchanged content versions are discarded. This prevents bot reactions or card updates from replaying an already handled @mention.
+- Group messages still require a configured @豆姐 mention before processing.
+- Router privacy rules still apply after polling.
+- Edited message versions are deduplicated, so the same edit is not replied to repeatedly.
+
+To add a real group later, find its `chat_id` and append it to `feishu.edit_polling.chat_ids`, then rebuild and restart the daemon. You can also ask 豆姐 to add a named group to edited-message polling; it should resolve the group, update `~/.doujie/config.yaml`, and restart `com.doujie.daemon`.
 
 ## Development
 

@@ -59,6 +59,66 @@ Relevant files:
 
 Project Agent records store `alias + provider + nativeSessionId + cwd + jsonlPath`. Alias alone is never enough to resume a provider session; dispatch must use the stored provider and cwd with the native session id.
 
+## Project Agent Registry Design
+
+`~/.doujie/agent-sessions.json` is the trusted registry for named project Agent sessions. It is intentionally not a full historical scan of every Codex or Claude transcript on disk.
+
+Record shape:
+
+```json
+{
+  "alias": "doujie-main",
+  "provider": "codex",
+  "nativeSessionId": "019...",
+  "cwd": "/home/doujie/service/doujie",
+  "jsonlPath": "/home/doujie/.codex/sessions/2026/07/31/rollout-...jsonl",
+  "createdAt": "2026-07-31T00:00:00.000Z",
+  "updatedAt": "2026-07-31T00:00:00.000Z",
+  "lastUsedAt": null,
+  "createdBy": {
+    "chatId": "oc_mock_chat",
+    "senderId": "ou_mock_user"
+  },
+  "launch": {
+    "model": "",
+    "sandbox": "danger-full-access",
+    "skipGitRepoCheck": true,
+    "permissionMode": "",
+    "outputFormat": "json"
+  }
+}
+```
+
+Lookup order:
+
+1. Exact alias in `~/.doujie/agent-sessions.json`.
+2. Current Feishu/Doujie Codex binding in `~/.doujie/codex-sessions.json`.
+3. Doujie control registry in `~/.doujie/sessions/index.json`.
+4. Codex native indexes and jsonl files under `~/.codex`.
+5. Claude Code jsonl files under `~/.claude/projects`.
+
+Current registry incrementality is write-time incrementality:
+
+- Creating a project Agent through Doujie writes or updates the alias record.
+- Dispatching/resuming a registered project Agent updates `updatedAt`, `lastUsedAt`, and refreshes `jsonlPath` when possible.
+- Existing provider sessions that were created outside Doujie are not automatically imported.
+
+Do not use `agent-sessions.json` as an unreviewed auto-index. A future automatic scanner should write a separate discovery index, for example:
+
+```text
+~/.doujie/session-discovery-index.json
+```
+
+That discovery index can be built incrementally from file `path + mtime + size`, parsing only changed Codex/Claude jsonl files. Promotion from the discovery index into `agent-sessions.json` should require a clear alias, provider, cwd, native session id, and user confirmation.
+
+`launch.sandbox` records the Codex permission boundary used at session creation:
+
+- `read-only`: inspect-only.
+- `workspace-write`: can edit within the workspace.
+- `danger-full-access`: broad local access. This is the current temporary default for Codex project Agents, including resume of older registry entries, until the user changes the policy.
+
+This sandbox is the provider session's permission mode, not the launchd daemon's operating-system permission.
+
 ## Message Processing Modes
 
 Command mode:
