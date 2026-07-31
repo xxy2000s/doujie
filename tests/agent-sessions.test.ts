@@ -13,6 +13,7 @@ import {
 import {
   buildClaudeCreateArgs,
   buildCodexCreateArgs,
+  buildCodexResumeArgs,
   extractProviderResult,
   type CreateAgentSessionDraft,
   type HeadlessAgentRunnerLike,
@@ -63,7 +64,8 @@ test('parseCreateAgentSessionIntent extracts provider cwd alias and prompt', () 
   assert.equal(parsed.draft.cwd, '/home/doujie/service/doujie');
   assert.equal(parsed.draft.alias, 'doujie-main');
   assert.equal(parsed.draft.prompt, '先熟悉项目');
-  assert.equal(parsed.draft.sandbox, 'workspace-write');
+  assert.equal(parsed.draft.sandbox, 'danger-full-access');
+  assert.equal(parsed.draft.skipGitRepoCheck, true);
 });
 
 test('parseCreateAgentSessionIntent asks for missing structured fields', () => {
@@ -87,7 +89,7 @@ test('registry stores and retrieves sessions by alias', () => {
   }
 });
 
-test('headless provider args use cwd for create and safe defaults', () => {
+test('headless provider args use cwd and full-access Codex defaults', () => {
   const codexDraft: CreateAgentSessionDraft = {
     provider: 'codex',
     alias: 'demo-main',
@@ -109,8 +111,8 @@ test('headless provider args use cwd for create and safe defaults', () => {
     '--ignore-user-config',
     '--cd',
     '/repo/demo',
-    '--sandbox',
-    'workspace-write',
+    '--dangerously-bypass-approvals-and-sandbox',
+    '--skip-git-repo-check',
     'hello',
   ]);
   assert.deepEqual(buildClaudeCreateArgs(claudeDraft), [
@@ -123,6 +125,23 @@ test('headless provider args use cwd for create and safe defaults', () => {
     'default',
     'hello',
   ]);
+});
+
+test('Codex resume uses supported full-access flags before session id without shell quoting', () => {
+  const prompt = 'line one\n`echo not-a-shell` $(false) "quoted"';
+  const args = buildCodexResumeArgs(record(), prompt);
+
+  assert.deepEqual(args, [
+    'exec',
+    'resume',
+    '--json',
+    '--ignore-user-config',
+    '--dangerously-bypass-approvals-and-sandbox',
+    '--skip-git-repo-check',
+    '019-session',
+    prompt,
+  ]);
+  assert.equal(args.includes('--sandbox'), false);
 });
 
 test('provider output parser captures Codex and Claude session ids', () => {

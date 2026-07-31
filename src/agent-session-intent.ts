@@ -2,7 +2,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { formatAgentSessionRecord, validateAgentAlias, type AgentProvider } from './agent-session-registry.js';
-import { type CreateAgentSessionDraft, type HeadlessAgentRunnerLike } from './headless-agent-runner.js';
+import {
+  DEFAULT_CODEX_AGENT_SANDBOX,
+  DEFAULT_CODEX_AGENT_SKIP_GIT_REPO_CHECK,
+  type CreateAgentSessionDraft,
+  type HeadlessAgentRunnerLike,
+} from './headless-agent-runner.js';
 import type { MessageContent } from './types.js';
 
 export type AgentSessionDraft = Omit<CreateAgentSessionDraft, 'createdBy'>;
@@ -181,7 +186,8 @@ export function parseCreateAgentSessionIntent(text: string): ParseAgentSessionIn
       cwd,
       alias,
       prompt,
-      sandbox: provider === 'codex' ? 'workspace-write' : undefined,
+      sandbox: provider === 'codex' ? DEFAULT_CODEX_AGENT_SANDBOX : undefined,
+      skipGitRepoCheck: provider === 'codex' ? DEFAULT_CODEX_AGENT_SKIP_GIT_REPO_CHECK : undefined,
       permissionMode: provider === 'claude' ? 'default' : undefined,
     },
   };
@@ -233,7 +239,7 @@ function formatConfirmation(action: PendingAgentAction): string {
     `**Alias:** \`${action.draft.alias}\``,
     `**CWD:** \`${action.draft.cwd}\``,
     `**Prompt:** ${action.draft.prompt}`,
-    `**Default Permission:** ${action.draft.provider === 'codex' ? 'workspace-write' : 'default'}`,
+    `**Default Permission:** ${action.draft.provider === 'codex' ? DEFAULT_CODEX_AGENT_SANDBOX : 'default'}`,
     '',
     '回复「确认」执行，回复「取消」放弃。10 分钟后自动过期。',
   ].join('\n');

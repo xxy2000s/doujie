@@ -6,6 +6,8 @@ import { EditedMessagePoller } from './edited-message-poller.js';
 import { AIPipeline } from './ai/pipeline.js';
 import { AnswerPipeline } from './ai/answer-pipeline.js';
 import { Router } from './router.js';
+import { AgentSessionIntentController } from './agent-session-intent.js';
+import { HeadlessAgentRunner } from './headless-agent-runner.js';
 import { createCommandRegistry, type CommandRuntime } from './commands/index.js';
 import { replyError, replyStatusCard, replyText, replyToMessage, updateStatusCard, type StatusCardParams } from './reply.js';
 import { addReaction, type ReactionEmoji } from './reaction.js';
@@ -74,6 +76,12 @@ async function main(): Promise<void> {
   // Initialize router
   const attachmentDownloader = createLarkAttachmentDownloader(config.storage.attachmentCacheDir, config.feishu.as);
   const attachmentExtractor = createAttachmentExtractor({ ocrCommand: config.attachments.ocrCommand });
+  const agentSessionIntentController = new AgentSessionIntentController(
+    new HeadlessAgentRunner(undefined, {
+      codexSandbox: config.codex.sandbox,
+      codexSkipGitRepoCheck: true,
+    })
+  );
   const router = new Router(
     commands,
     aiPipeline,
@@ -98,7 +106,8 @@ async function main(): Promise<void> {
     {
       ids: config.feishu.botMentionIds,
       names: config.feishu.botMentionNames,
-    }
+    },
+    agentSessionIntentController
   );
 
   // Event handler

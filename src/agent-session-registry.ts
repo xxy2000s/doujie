@@ -7,6 +7,7 @@ export type AgentProvider = 'codex' | 'claude';
 export type AgentSessionLaunch = {
   model: string;
   sandbox: string;
+  skipGitRepoCheck?: boolean;
   permissionMode: string;
   outputFormat: string;
 };
@@ -133,6 +134,7 @@ export function formatAgentSessionRecord(record: AgentSessionRecord): string {
     `**Provider:** ${record.provider}`,
     `**Session:** \`${record.nativeSessionId}\``,
     `**CWD:** \`${record.cwd}\``,
+    `**Permission:** ${record.provider === 'codex' ? record.launch.sandbox : record.launch.permissionMode}`,
     `**JSONL:** ${record.jsonlPath ? `\`${record.jsonlPath}\`` : '(not found yet)'}`,
     `**Updated:** ${record.updatedAt}`,
   ].join('\n');

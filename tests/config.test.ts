@@ -60,6 +60,7 @@ test('buildConfig leaves codex model empty by default', () => {
   const config = buildConfig({}, {});
 
   assert.equal(config.codex.model, '');
+  assert.equal(config.codex.sandbox, 'danger-full-access');
   assert.match(config.codex.controlSessionDir, /\/\.doujie\/sessions$/);
   assert.deepEqual(config.feishu.botMentionIds, []);
   assert.deepEqual(config.feishu.botMentionNames, []);

@@ -16,6 +16,7 @@ export type CreateAgentSessionDraft = {
   prompt: string;
   model?: string;
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  skipGitRepoCheck?: boolean;
   permissionMode?: 'acceptEdits' | 'auto' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan';
   createdBy: {
     chatId: string;
@@ -33,20 +34,43 @@ export type ProviderProcessResult = {
   text: string;
 };
 
+export type HeadlessAgentRunnerOptions = {
+  codexSandbox: NonNullable<CreateAgentSessionDraft['sandbox']>;
+  codexSkipGitRepoCheck: boolean;
+};
+
+export const DEFAULT_CODEX_AGENT_SANDBOX = 'danger-full-access' as const;
+export const DEFAULT_CODEX_AGENT_SKIP_GIT_REPO_CHECK = true;
+
 export type HeadlessAgentRunnerLike = {
   create(draft: CreateAgentSessionDraft): Promise<AgentSessionRecord>;
   dispatch(input: DispatchAgentSessionInput): Promise<{ record: AgentSessionRecord; text: string }>;
 };
 
 export class HeadlessAgentRunner implements HeadlessAgentRunnerLike {
-  constructor(private readonly registry: AgentSessionRegistryStore = new AgentSessionRegistryStore()) {}
+  constructor(
+    private readonly registry: AgentSessionRegistryStore = new AgentSessionRegistryStore(),
+    private readonly options: HeadlessAgentRunnerOptions = {
+      codexSandbox: DEFAULT_CODEX_AGENT_SANDBOX,
+      codexSkipGitRepoCheck: DEFAULT_CODEX_AGENT_SKIP_GIT_REPO_CHECK,
+    }
+  ) {}
 
   async create(draft: CreateAgentSessionDraft): Promise<AgentSessionRecord> {
     const cwd = resolveExistingDirectory(draft.cwd);
+    const effectiveDraft =
+      draft.provider === 'codex'
+        ? {
+            ...draft,
+            cwd,
+            sandbox: this.options.codexSandbox,
+            skipGitRepoCheck: this.options.codexSkipGitRepoCheck,
+          }
+        : { ...draft, cwd };
     const result =
       draft.provider === 'codex'
-        ? await runProviderCommand('codex', buildCodexCreateArgs({ ...draft, cwd }), cwd)
-        : await runProviderCommand('claude', buildClaudeCreateArgs({ ...draft, cwd }), cwd);
+        ? await runProviderCommand('codex', buildCodexCreateArgs(effectiveDraft), cwd)
+        : await runProviderCommand('claude', buildClaudeCreateArgs(effectiveDraft), cwd);
     if (!result.sessionId) {
       throw new Error(`${draft.provider} did not return a native session id`);
     }
@@ -63,7 +87,8 @@ export class HeadlessAgentRunner implements HeadlessAgentRunnerLike {
       createdBy: draft.createdBy,
       launch: {
         model: draft.model ?? '',
-        sandbox: draft.provider === 'codex' ? draft.sandbox ?? 'workspace-write' : '',
+        sandbox: draft.provider === 'codex' ? this.options.codexSandbox : '',
+        skipGitRepoCheck: draft.provider === 'codex' ? this.options.codexSkipGitRepoCheck : false,
         permissionMode: draft.provider === 'claude' ? draft.permissionMode ?? 'default' : '',
         outputFormat: draft.provider === 'codex' ? 'json' : 'json',
       },
@@ -75,12 +100,27 @@ export class HeadlessAgentRunner implements HeadlessAgentRunnerLike {
     const cwd = resolveExistingDirectory(input.record.cwd);
     const result =
       input.record.provider === 'codex'
-        ? await runProviderCommand('codex', buildCodexResumeArgs(input.record, input.prompt), cwd)
+        ? await runProviderCommand(
+            'codex',
+            buildCodexResumeArgs(input.record, input.prompt, {
+              sandbox: this.options.codexSandbox,
+              skipGitRepoCheck: this.options.codexSkipGitRepoCheck,
+            }),
+            cwd
+          )
         : await runProviderCommand('claude', buildClaudeResumeArgs(input.record, input.prompt), cwd);
     const updated = this.registry.upsert({
       ...input.record,
       jsonlPath: findProviderJsonlPath(input.record.provider, input.record.nativeSessionId) ?? input.record.jsonlPath,
       lastUsedAt: new Date().toISOString(),
+      launch:
+        input.record.provider === 'codex'
+          ? {
+              ...input.record.launch,
+              sandbox: this.options.codexSandbox,
+              skipGitRepoCheck: this.options.codexSkipGitRepoCheck,
+            }
+          : input.record.launch,
     });
     return { record: updated, text: result.text };
   }
@@ -88,14 +128,31 @@ export class HeadlessAgentRunner implements HeadlessAgentRunnerLike {
 
 export function buildCodexCreateArgs(draft: CreateAgentSessionDraft): string[] {
   const args = ['exec', '--json', '--ignore-user-config', '--cd', draft.cwd];
-  pushCodexSandboxArgs(args, draft.sandbox ?? 'workspace-write');
+  pushCodexSandboxArgs(args, draft.sandbox ?? DEFAULT_CODEX_AGENT_SANDBOX);
   if (draft.model) args.push('--model', draft.model);
+  if (draft.skipGitRepoCheck ?? DEFAULT_CODEX_AGENT_SKIP_GIT_REPO_CHECK) {
+    args.push('--skip-git-repo-check');
+  }
   args.push(draft.prompt);
   return args;
 }
 
-export function buildCodexResumeArgs(record: AgentSessionRecord, prompt: string): string[] {
-  return ['exec', 'resume', '--json', '--ignore-user-config', record.nativeSessionId, prompt];
+export function buildCodexResumeArgs(
+  record: AgentSessionRecord,
+  prompt: string,
+  options: {
+    sandbox?: NonNullable<CreateAgentSessionDraft['sandbox']>;
+    skipGitRepoCheck?: boolean;
+  } = {}
+): string[] {
+  const args = ['exec', 'resume', '--json', '--ignore-user-config'];
+  pushCodexSandboxArgs(args, options.sandbox ?? DEFAULT_CODEX_AGENT_SANDBOX);
+  if (options.skipGitRepoCheck ?? DEFAULT_CODEX_AGENT_SKIP_GIT_REPO_CHECK) {
+    args.push('--skip-git-repo-check');
+  }
+  if (record.launch.model) args.push('--model', record.launch.model);
+  args.push(record.nativeSessionId, prompt);
+  return args;
 }
 
 export function buildClaudeCreateArgs(draft: CreateAgentSessionDraft): string[] {

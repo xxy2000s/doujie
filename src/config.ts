@@ -84,7 +84,7 @@ export function buildConfig(
       sandbox:
         validateCodexSandbox(env.DOUJIE_CODEX_SANDBOX, 'DOUJIE_CODEX_SANDBOX') ||
         validateCodexSandbox(getNestedValue(yamlConfig, 'codex', 'sandbox'), 'codex.sandbox') ||
-        'workspace-write',
+        'danger-full-access',
       skipGitRepoCheck:
         validateOptionalBoolean(env.DOUJIE_CODEX_SKIP_GIT_REPO_CHECK, 'DOUJIE_CODEX_SKIP_GIT_REPO_CHECK') ??
         validateOptionalBoolean(getNestedValue(yamlConfig, 'codex', 'skip_git_repo_check'), 'codex.skip_git_repo_check') ??
