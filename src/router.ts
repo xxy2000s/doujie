@@ -15,8 +15,16 @@ import {
   DEFAULT_PRIVACY_CONFIG,
   evaluateContentPrivacy,
   evaluateMessagePrivacy,
+  canRunAgent,
+  findPrivacyGroupRule,
+  isPrivacyAdmin,
   redactForLog,
 } from './privacy.js';
+import {
+  formatGroupContextPrompt,
+  parseGroupContextRequest,
+  type GroupContextProvider,
+} from './group-context.js';
 import {
   extractUrls,
   fetchAllUrls,
@@ -109,6 +117,11 @@ const defaultCodexChatRunner: CodexChatRunnerLike = {
   run: runCodexChat,
 };
 
+const ADMIN_COMMANDS = new Set([
+  'new', 'detail', 'retry', 'redo', 'retag', 'merge-tag',
+  'errors', 'sessions', 'agent-sessions', 'backup', 'export', 'cleanup',
+]);
+
 type CodexStatusCardHandle = {
   messageId: string;
   startedAt: number;
@@ -142,6 +155,7 @@ export class Router {
   private botMentionConfig: BotMentionConfig;
   private activeCodexTurns = new Map<string, ActiveCodexTurn>();
   private agentSessionIntentController: AgentSessionIntentControllerLike | null;
+  private groupContextProvider: GroupContextProvider | null;
 
   constructor(
     commands: Map<string, CommandHandler>,
@@ -164,7 +178,8 @@ export class Router {
     defaultMessageMode: DefaultMessageMode = 'digest',
     reactionClient: ReactionClient | null = null,
     botMentionConfig: BotMentionConfig = { ids: [], names: [] },
-    agentSessionIntentController: AgentSessionIntentControllerLike | null = new AgentSessionIntentController(new HeadlessAgentRunner())
+    agentSessionIntentController: AgentSessionIntentControllerLike | null = new AgentSessionIntentController(new HeadlessAgentRunner()),
+    groupContextProvider: GroupContextProvider | null = null
   ) {
     this.commands = commands;
     this.aiPipeline = aiPipeline;
@@ -182,6 +197,7 @@ export class Router {
     this.defaultMessageMode = defaultMessageMode;
     this.botMentionConfig = botMentionConfig;
     this.agentSessionIntentController = agentSessionIntentController;
+    this.groupContextProvider = groupContextProvider;
   }
 
   async handleEvent(event: FeishuEvent): Promise<void> {
@@ -303,6 +319,12 @@ export class Router {
     try {
       if (this.isCommand(message.text)) {
         await this.handleCommand(message);
+      } else if (await this.handleGroupContextRequest(message)) {
+        return;
+      } else if (!canRunAgent(message, this.privacy)) {
+        await this.replyClient.replyText(message.messageId, '你可以使用本群允许的上下文总结功能，但没有权限调度 Codex Agent。');
+        this.store.markPrivacySkipped(message.messageId, 'privacy_skip:agent_not_allowed');
+        return;
       } else if (await this.handleAgentSessionIntent(message)) {
         return;
       } else {
@@ -521,6 +543,17 @@ export class Router {
 
     if (!commandName) return;
 
+    if (ADMIN_COMMANDS.has(commandName) && !isPrivacyAdmin(message.senderId, this.privacy)) {
+      await this.replyClient.replyText(message.messageId, `/${commandName} 仅管理员可用。`);
+      this.store.markPrivacySkipped(message.messageId, 'privacy_skip:admin_required');
+      return;
+    }
+    if ((commandName === 'codex' || commandName === 'digest' || commandName === 'ask') && !canRunAgent(message, this.privacy)) {
+      await this.replyClient.replyText(message.messageId, `/${commandName} 需要 Agent 调度权限。`);
+      this.store.markPrivacySkipped(message.messageId, 'privacy_skip:agent_not_allowed');
+      return;
+    }
+
     if (commandName === 'retry') {
       await this.handleRetryCommand(message, args);
       return;
@@ -593,12 +626,42 @@ export class Router {
 
   private async handleAgentSessionIntent(message: MessageContent): Promise<boolean> {
     if (!this.agentSessionIntentController) return false;
+    if (!isPrivacyAdmin(message.senderId, this.privacy)) {
+      const pending = this.agentSessionIntentController.hasPendingConfirmation?.(message) ?? false;
+      if (pending || /(codex|claude|agent|session|会话)/iu.test(message.text)) {
+        await this.replyClient.replyText(message.messageId, '项目 Agent 创建和恢复仅管理员可用。');
+        this.store.markPrivacySkipped(message.messageId, 'privacy_skip:admin_required');
+        return true;
+      }
+      return false;
+    }
     const result = await this.agentSessionIntentController.handle(message);
     if (!result) return false;
     this.store.setProcessingMode(message.messageId, 'agent_session');
     this.store.markProcessing(message.messageId, 'agent_session');
     await this.replyClient.replyText(message.messageId, result.text);
     this.store.markReplied(message.messageId);
+    return true;
+  }
+
+  private async handleGroupContextRequest(message: MessageContent): Promise<boolean> {
+    if (message.chatType !== 'group' || !this.groupContextProvider) return false;
+    const request = parseGroupContextRequest(message.text);
+    if (!request) return false;
+    const rule = findPrivacyGroupRule(message.chatId, this.privacy);
+    if (!rule?.contextEnabled) return false;
+
+    this.store.setProcessingMode(message.messageId, 'codex_chat');
+    this.store.markProcessing(message.messageId, 'group_context_fetch');
+    const messages = await this.groupContextProvider.fetch(message.chatId, rule, request);
+    const filtered = messages.filter((item) => item.messageId !== message.messageId);
+    if (filtered.length === 0) {
+      await this.replyClient.replyText(message.messageId, '没有读取到可用于总结的群聊上下文。');
+      this.store.markReplied(message.messageId);
+      return true;
+    }
+    const prompt = formatGroupContextPrompt(message.text, filtered, rule.contextMaxChars);
+    await this.handleCodexCommand(message, prompt, false, 'read-only', `context:${message.chatId}:${message.messageId}`);
     return true;
   }
 
@@ -813,7 +876,13 @@ export class Router {
     await this.handleCodexCommand(message, prompt, false);
   }
 
-  private async handleCodexCommand(message: MessageContent, args: string, detailed: boolean): Promise<void> {
+  private async handleCodexCommand(
+    message: MessageContent,
+    args: string,
+    detailed: boolean,
+    sandboxOverride?: CodexChatOptions['sandbox'],
+    sessionKeyOverride?: string
+  ): Promise<void> {
     const prompt = args.trim();
     if (!prompt) {
       await this.replyClient.replyText(message.messageId, detailed ? 'Usage: /detail <prompt>' : 'Usage: /codex <prompt>');
@@ -824,7 +893,7 @@ export class Router {
     this.store.setProcessingMode(message.messageId, 'codex_chat');
     this.store.markProcessing(message.messageId, 'codex_chat');
     await this.addStatusReaction(message.messageId, 'THINKING');
-    const sessionKey = this.getCodexSessionKey(message);
+    const sessionKey = sessionKeyOverride ?? this.getCodexSessionKey(message);
     const turn = this.startCodexTurn(sessionKey, message.messageId);
     if (detailed) {
       await this.replyClient.replyText(message.messageId, 'Codex 已开始处理。');
@@ -837,6 +906,7 @@ export class Router {
         prompt,
         {
           ...this.codexChatOptions,
+          ...(sandboxOverride ? { sandbox: sandboxOverride } : {}),
           sessionKey,
           outputMode: detailed ? 'detail' : 'answer',
           abortSignal: turn.controller.signal,

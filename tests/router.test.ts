@@ -319,6 +319,68 @@ test('Router dispatches commands through injected reply client', async () => {
   }
 });
 
+test('Router blocks admin commands for an allowed non-admin group member', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-admin-gate');
+  const store = new Store(dbPath, () => 1001);
+  const reply = createFakeReply();
+  const privacy: PrivacyConfig = {
+    allowChatIds: [], denyChatIds: [], allowUserIds: [], denyUserIds: [], skipPatterns: [], redactPatterns: [],
+    adminUserIds: ['ou_admin'], privateAllowUserIds: ['ou_admin'],
+    groups: [{ chatId: 'oc_team', allowUserIds: ['ou_member'], allowAgentUserIds: [], contextEnabled: true, contextMaxMessages: 20, contextMaxChars: 10000 }],
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), privacy,
+    null, null, null, undefined, undefined, undefined, null, { ids: [], names: ['豆姐'] }, null
+  );
+  try {
+    await router.handleEvent(textEvent({
+      messageId: 'admin-gate-1', chatId: 'oc_team', chatType: 'group', senderId: 'ou_member',
+      text: '@豆姐 /new', mentions: [{ name: '豆姐', key: '@豆姐' }],
+    }));
+    assert.deepEqual(reply.texts.map((item) => item.text), ['/new 仅管理员可用。']);
+    assert.equal(store.getProcessingJob('admin-gate-1')?.stage, 'privacy_skip');
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router fetches explicit group context and runs the summary in read-only mode', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-group-context');
+  const store = new Store(dbPath, () => 1002);
+  const reply = createFakeReply();
+  const codex = createFakeCodexChatRunner(['summary']);
+  const privacy: PrivacyConfig = {
+    allowChatIds: [], denyChatIds: [], allowUserIds: [], denyUserIds: [], skipPatterns: [], redactPatterns: [],
+    adminUserIds: ['ou_admin'], privateAllowUserIds: ['ou_admin'],
+    groups: [{ chatId: 'oc_team', allowUserIds: ['ou_member'], allowAgentUserIds: [], contextEnabled: true, contextMaxMessages: 20, contextMaxChars: 10000 }],
+  };
+  let fetched = false;
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), privacy,
+    null, null, null, codex.runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: [], names: ['豆姐'] }, null,
+    { async fetch() { fetched = true; return [{ messageId: 'history-1', senderName: 'A', senderType: 'user', createdAt: '10:00', text: 'use sqlite' }]; } }
+  );
+  try {
+    await router.handleEvent(textEvent({
+      messageId: 'context-1', chatId: 'oc_team', chatType: 'group', senderId: 'ou_member',
+      text: '@豆姐 总结最近 20 条聊天', mentions: [{ name: '豆姐', key: '@豆姐' }],
+    }));
+    assert.equal(fetched, true);
+    assert.match(codex.prompts[0] ?? '', /use sqlite/);
+    assert.equal(codex.options[0]?.sandbox, 'read-only');
+    assert.equal(codex.options[0]?.sessionKey, 'context:oc_team:context-1');
+    assert.deepEqual(reply.texts.map((item) => item.text), ['summary']);
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
 test('Router streams Codex chunks while updating one status card when supported', async () => {
   const { dir, dbPath } = createTempDbPath('doujie-router-codex-status-card');
   const store = new Store(dbPath, () => 1110);

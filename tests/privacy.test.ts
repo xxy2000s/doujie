@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { evaluateContentPrivacy, evaluateMessagePrivacy, redactForLog } from '../src/privacy.js';
+import { canRunAgent, evaluateContentPrivacy, evaluateMessagePrivacy, isPrivacyAdmin, redactForLog } from '../src/privacy.js';
 import type { PrivacyConfig } from '../src/types.js';
 import { textEvent } from './helpers.js';
 
@@ -46,4 +46,33 @@ test('evaluateContentPrivacy skips or redacts configured patterns', () => {
 
 test('redactForLog removes configured sensitive text', () => {
   assert.equal(redactForLog('failed for user@example.com', privacyConfig), 'failed for [EMAIL]');
+});
+
+test('scoped privacy rules separate private users, group members, agents, and admins', () => {
+  const config: PrivacyConfig = {
+    ...privacyConfig,
+    adminUserIds: ['ou_admin'],
+    privateAllowUserIds: ['ou_admin'],
+    groups: [{
+      chatId: 'oc_team',
+      allowUserIds: ['ou_admin', 'ou_member'],
+      allowAgentUserIds: ['ou_admin'],
+      contextEnabled: true,
+      contextMaxMessages: 50,
+      contextMaxChars: 30000,
+    }],
+  };
+  const groupEvent = textEvent({ messageId: 'group-member', chatId: 'oc_team', chatType: 'group', senderId: 'ou_member', text: 'hello' });
+  const groupMessage = { messageId: 'group-member', chatId: 'oc_team', chatType: 'group', senderId: 'ou_member', messageType: 'text', text: 'hello', rawContent: '{"text":"hello"}', mentions: [] };
+  const privateEvent = textEvent({ messageId: 'private-member', senderId: 'ou_member', text: 'hello' });
+  const privateMessage = { ...groupMessage, messageId: 'private-member', chatId: 'oc_test', chatType: 'p2p' };
+
+  assert.equal(evaluateMessagePrivacy(groupMessage, groupEvent, config).action, 'allow');
+  assert.equal(evaluateMessagePrivacy(privateMessage, privateEvent, config).action, 'skip');
+  assert.equal(canRunAgent(groupMessage, config), false);
+  const fallbackEvent = textEvent({ messageId: 'fallback', chatId: 'oc_other', chatType: 'group', senderId: 'ou_member', text: 'hello' });
+  const fallbackMessage = { ...groupMessage, messageId: 'fallback', chatId: 'oc_other' };
+  assert.equal(evaluateMessagePrivacy(fallbackMessage, fallbackEvent, config).action, 'allow');
+  assert.equal(isPrivacyAdmin('ou_admin', config), true);
+  assert.equal(isPrivacyAdmin('ou_member', config), false);
 });

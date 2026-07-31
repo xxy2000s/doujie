@@ -153,6 +153,10 @@ export function buildConfig(
         validateOptionalStringArray(getNestedValue(yamlConfig, 'privacy', 'allow_user_ids'), 'privacy.allow_user_ids') || [],
       denyUserIds:
         validateOptionalStringArray(getNestedValue(yamlConfig, 'privacy', 'deny_user_ids'), 'privacy.deny_user_ids') || [],
+      adminUserIds:
+        validateOptionalStringArray(getNestedValue(yamlConfig, 'privacy', 'admin_user_ids'), 'privacy.admin_user_ids') || [],
+      privateAllowUserIds: validatePrivateAllowUsers(getNestedValue(yamlConfig, 'privacy', 'private')),
+      groups: validatePrivacyGroups(getNestedValue(yamlConfig, 'privacy', 'groups')),
       skipPatterns:
         validatePrivacyPatterns(getNestedValue(yamlConfig, 'privacy', 'skip_patterns'), 'privacy.skip_patterns', false) || [],
       redactPatterns:
@@ -162,6 +166,39 @@ export function buildConfig(
       ocrCommand: validateOptionalString(getNestedValue(yamlConfig, 'attachments', 'ocr_command'), 'attachments.ocr_command') || null,
     },
   };
+}
+
+function validatePrivateAllowUsers(value: unknown): string[] | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new ConfigError('privacy.private must be an object');
+  }
+  return validateOptionalStringArray((value as Record<string, unknown>).allow_user_ids, 'privacy.private.allow_user_ids') || [];
+}
+
+function validatePrivacyGroups(value: unknown) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new ConfigError('privacy.groups must be an array');
+  return value.map((item, index) => {
+    const label = `privacy.groups[${index}]`;
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      throw new ConfigError(`${label} must be an object`);
+    }
+    const record = item as Record<string, unknown>;
+    const chatId = validateOptionalString(record.chat_id, `${label}.chat_id`);
+    if (!chatId) throw new ConfigError(`${label}.chat_id must be a non-empty string`);
+    const context = typeof record.context === 'object' && record.context !== null && !Array.isArray(record.context)
+      ? record.context as Record<string, unknown>
+      : {};
+    return {
+      chatId,
+      allowUserIds: validateOptionalStringArray(record.allow_user_ids, `${label}.allow_user_ids`) || [],
+      allowAgentUserIds: validateOptionalStringArray(record.allow_agent_user_ids, `${label}.allow_agent_user_ids`) || [],
+      contextEnabled: validateOptionalBoolean(context.enabled, `${label}.context.enabled`) ?? false,
+      contextMaxMessages: validateOptionalPositiveInteger(context.max_messages, `${label}.context.max_messages`) || 50,
+      contextMaxChars: validateOptionalPositiveInteger(context.max_chars, `${label}.context.max_chars`) || 30000,
+    };
+  });
 }
 
 function validateOptionalString(value: unknown, label: string): string | undefined {

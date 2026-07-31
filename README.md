@@ -122,7 +122,41 @@ feishu:
 
 storage:
   db_path: ~/.doujie/data.db
+
+privacy:
+  # Administrators may use management commands and project Agents.
+  admin_user_ids:
+    - ou_mock_admin
+  private:
+    allow_user_ids:
+      - ou_mock_admin
+  groups:
+    - chat_id: oc_mock_group
+      # Members may use the explicitly enabled group-context feature.
+      allow_user_ids:
+        - ou_mock_admin
+        - ou_mock_member
+      # Only these users may run arbitrary Codex/project Agent instructions.
+      allow_agent_user_ids:
+        - ou_mock_admin
+      context:
+        enabled: true
+        max_messages: 50
+        max_chars: 30000
 ```
+
+### Access Isolation And Group Context
+
+The scoped privacy configuration separates four capabilities that were previously controlled by one global allowlist:
+
+- `privacy.private.allow_user_ids` controls private-chat access.
+- `privacy.groups[].allow_user_ids` controls who may use Doujie in that group.
+- `privacy.groups[].allow_agent_user_ids` controls arbitrary Codex and project Agent execution in that group. Administrators are always allowed.
+- `privacy.admin_user_ids` controls management commands such as `/new`, `/sessions`, exports, cleanup, and Agent session management.
+
+For compatibility, installations without any scoped private/group/admin rules continue to use the legacy `privacy.allow_user_ids` behavior. Once scoped rules are configured, keep the intended users explicit.
+
+When a permitted group member explicitly asks to summarize or review recent group discussion, Doujie fetches the bounded history configured under that group's `context` block and runs the request in a new isolated read-only Codex session. Ordinary non-mention messages are not processed as commands. They are only read later through Feishu history when an allowed user explicitly requests context. This feature requires a valid user OAuth identity with permission to read that group's message history.
 
 ### Edited Group Mentions
 
@@ -238,4 +272,7 @@ The latest verified smoke tests were:
 
 - [AGENTS.md](./AGENTS.md): rules for AI agents working in this repository.
 - [docs/architecture.md](./docs/architecture.md): architecture and ownership boundaries.
+- [docs/remote-linux-deployment.md](./docs/remote-linux-deployment.md): deploy a brand-new Doujie for a new Feishu account on a remote Linux server (English).
+- [docs/remote-linux-deployment.zh-CN.md](./docs/remote-linux-deployment.zh-CN.md): 全新飞书账号和远程 Linux 服务器部署指南（中文）。
+- [docs/remote-linux-deployment-field-report.zh-CN.md](./docs/remote-linux-deployment-field-report.zh-CN.md): 从源码、服务器到飞书真实 E2E 的部署实战、踩坑复盘和用户配合清单。
 - [docs/operations.md](./docs/operations.md): service, config, session, and E2E procedures.

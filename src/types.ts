@@ -160,11 +160,23 @@ export type PrivacyPattern = {
   replacement?: string;
 };
 
+export type PrivacyGroupRule = {
+  chatId: string;
+  allowUserIds: string[];
+  allowAgentUserIds?: string[];
+  contextEnabled: boolean;
+  contextMaxMessages: number;
+  contextMaxChars: number;
+};
+
 export interface PrivacyConfig {
   allowChatIds: string[];
   denyChatIds: string[];
   allowUserIds: string[];
   denyUserIds: string[];
+  adminUserIds?: string[];
+  privateAllowUserIds?: string[] | null;
+  groups?: PrivacyGroupRule[];
   skipPatterns: PrivacyPattern[];
   redactPatterns: PrivacyPattern[];
 }

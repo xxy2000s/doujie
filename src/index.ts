@@ -15,6 +15,7 @@ import { DEFAULT_PRIVACY_CONFIG, redactForLog } from './privacy.js';
 import { createLarkAttachmentDownloader } from './attachments.js';
 import { createAttachmentExtractor } from './attachment-extractor.js';
 import type { AIResult, FeishuEvent, PrivacyConfig } from './types.js';
+import { LarkGroupContextProvider } from './group-context.js';
 
 let activePrivacyConfig: PrivacyConfig = DEFAULT_PRIVACY_CONFIG;
 
@@ -107,7 +108,8 @@ async function main(): Promise<void> {
       ids: config.feishu.botMentionIds,
       names: config.feishu.botMentionNames,
     },
-    agentSessionIntentController
+    agentSessionIntentController,
+    new LarkGroupContextProvider('user')
   );
 
   // Event handler

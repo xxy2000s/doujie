@@ -34,6 +34,9 @@ test('buildConfig accepts valid YAML and environment overrides', () => {
   assert.match(config.storage.exportDir, /exports$/);
   assert.match(config.storage.attachmentCacheDir, /attachments$/);
   assert.deepEqual(config.privacy.skipPatterns, []);
+  assert.deepEqual(config.privacy.adminUserIds, []);
+  assert.equal(config.privacy.privateAllowUserIds, null);
+  assert.deepEqual(config.privacy.groups, []);
   assert.equal(config.attachments.ocrCommand, null);
 });
 
@@ -138,6 +141,32 @@ test('buildConfig accepts and validates privacy rules', () => {
   assert.deepEqual(config.privacy.redactPatterns, [
     { name: 'email', pattern: '[^\\s]+@example\\.com', replacement: '[EMAIL]' },
   ]);
+});
+
+test('buildConfig accepts private, group, admin, and context privacy rules', () => {
+  const config = buildConfig({
+    privacy: {
+      admin_user_ids: ['ou_admin'],
+      private: { allow_user_ids: ['ou_admin'] },
+      groups: [{
+        chat_id: 'oc_team',
+        allow_user_ids: ['ou_admin', 'ou_member'],
+        allow_agent_user_ids: ['ou_admin'],
+        context: { enabled: true, max_messages: 25, max_chars: 12000 },
+      }],
+    },
+  }, {});
+
+  assert.deepEqual(config.privacy.adminUserIds, ['ou_admin']);
+  assert.deepEqual(config.privacy.privateAllowUserIds, ['ou_admin']);
+  assert.deepEqual(config.privacy.groups, [{
+    chatId: 'oc_team',
+    allowUserIds: ['ou_admin', 'ou_member'],
+    allowAgentUserIds: ['ou_admin'],
+    contextEnabled: true,
+    contextMaxMessages: 25,
+    contextMaxChars: 12000,
+  }]);
 });
 
 test('buildConfig rejects invalid privacy regex', () => {

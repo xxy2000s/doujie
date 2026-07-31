@@ -33,6 +33,9 @@ export const DEFAULT_PRIVACY_CONFIG: PrivacyConfig = {
   denyChatIds: [],
   allowUserIds: [],
   denyUserIds: [],
+  adminUserIds: [],
+  privateAllowUserIds: null,
+  groups: [],
   skipPatterns: [],
   redactPatterns: [],
 };
@@ -122,6 +125,13 @@ function evaluateIdentityRules(message: MessageContent, config: PrivacyConfig): 
   if (config.denyUserIds.includes(message.senderId)) {
     return 'privacy_skip:deny_user';
   }
+  if (message.chatType !== 'group' && config.privateAllowUserIds !== undefined && config.privateAllowUserIds !== null) {
+    return config.privateAllowUserIds.includes(message.senderId) ? null : 'privacy_skip:private_user_miss';
+  }
+  if (message.chatType === 'group' && (config.groups?.length ?? 0) > 0) {
+    const group = config.groups?.find((rule) => rule.chatId === message.chatId);
+    if (group) return group.allowUserIds.includes(message.senderId) ? null : 'privacy_skip:group_user_miss';
+  }
   if (config.allowChatIds.length > 0 && !config.allowChatIds.includes(message.chatId)) {
     return 'privacy_skip:allow_chat_miss';
   }
@@ -129,6 +139,22 @@ function evaluateIdentityRules(message: MessageContent, config: PrivacyConfig): 
     return 'privacy_skip:allow_user_miss';
   }
   return null;
+}
+
+export function isPrivacyAdmin(senderId: string, config: PrivacyConfig): boolean {
+  const roleRulesEnabled = (config.adminUserIds?.length ?? 0) > 0 || (config.groups?.length ?? 0) > 0 || config.privateAllowUserIds != null;
+  return roleRulesEnabled ? (config.adminUserIds?.includes(senderId) ?? false) : true;
+}
+
+export function findPrivacyGroupRule(chatId: string, config: PrivacyConfig) {
+  return config.groups?.find((rule) => rule.chatId === chatId) ?? null;
+}
+
+export function canRunAgent(message: MessageContent, config: PrivacyConfig): boolean {
+  if (isPrivacyAdmin(message.senderId, config)) return true;
+  if (message.chatType !== 'group') return config.privateAllowUserIds?.includes(message.senderId) ?? true;
+  const group = findPrivacyGroupRule(message.chatId, config);
+  return group ? (group.allowAgentUserIds?.includes(message.senderId) ?? false) : true;
 }
 
 function redactText(text: string, patterns: PrivacyPattern[]): { text: string; matchedRules: string[] } {
