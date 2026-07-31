@@ -515,6 +515,210 @@ test('Router interrupts an active Codex chat when a newer message uses the same 
   }
 });
 
+test('Router ignores an unchanged polled edit while the original mentioned message is running', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-reaction-edit-dedup');
+  const store = new Store(dbPath, () => 1135);
+  const reply = createFakeReplyWithStatusCards();
+  const reaction = createFakeReaction();
+  const started = createDeferred<void>();
+  const finished = createDeferred<CodexChatResult>();
+  const prompts: string[] = [];
+  const signals: AbortSignal[] = [];
+  const runner: CodexChatRunnerLike = {
+    async run(
+      prompt: string,
+      options: CodexChatOptions,
+      onChunk: (text: string) => Promise<void>
+    ): Promise<CodexChatResult> {
+      prompts.push(prompt);
+      if (options.abortSignal) signals.push(options.abortSignal);
+      started.resolve();
+      const result = await finished.promise;
+      await onChunk('original reply');
+      return result;
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true },
+    'codex_chat',
+    reaction.client,
+    { ids: ['cli_bot'], names: ['Doujie'] }
+  );
+  const original = textEvent({
+    messageId: 'reaction-edit-1',
+    text: '@Doujie inspect paragraph',
+    chatId: 'oc_group',
+    chatType: 'group',
+    mentions: [{ key: '@Doujie', name: 'Doujie', id: { app_id: 'cli_bot' } }],
+  });
+  const polledAfterReaction = editedTextEvent({
+    messageId: 'reaction-edit-1',
+    text: '@Doujie inspect paragraph',
+    chatId: 'oc_group',
+    chatType: 'group',
+    mentions: [{ key: '@Doujie', name: 'Doujie', id: { app_id: 'cli_bot' } }],
+  });
+
+  try {
+    const originalRun = router.handleEvent(original);
+    await started.promise;
+    await router.handleEvent(polledAfterReaction);
+
+    assert.deepEqual(prompts, ['inspect paragraph']);
+    assert.equal(signals[0]?.aborted, false);
+    assert.equal(reply.texts.some((item) => item.text.includes('已被新消息打断')), false);
+
+    finished.resolve({ sessionId: 'session-original' });
+    await originalRun;
+    assert.deepEqual(reply.texts.map((item) => item.text), ['original reply']);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router does not report interruption when a normal mention follows natural completion', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-natural-next-message');
+  const store = new Store(dbPath, () => 1136);
+  const reply = createFakeReplyWithStatusCards();
+  const codex = createFakeCodexChatRunner(['normal reply']);
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    codex.runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true },
+    'codex_chat',
+    null,
+    { ids: ['cli_bot'], names: ['Doujie'] }
+  );
+
+  try {
+    for (const [messageId, text] of [['natural-1', 'first complete'], ['natural-2', 'second normal']] as const) {
+      await router.handleEvent(textEvent({
+        messageId,
+        text: `@Doujie ${text}`,
+        chatId: 'oc_group',
+        chatType: 'group',
+        mentions: [{ key: '@Doujie', name: 'Doujie', id: { app_id: 'cli_bot' } }],
+      }));
+    }
+
+    assert.deepEqual(codex.prompts, ['first complete', 'second normal']);
+    assert.equal(reply.texts.some((item) => item.text.includes('已被新消息打断')), false);
+    assert.equal(reply.statusUpdates.filter((item) => item.params.stage === '被新消息打断').length, 0);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('A late close from an interrupted turn cannot clear or overwrite the newer active turn', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-late-close-generation');
+  const store = new Store(dbPath, () => 1137);
+  const reply = createFakeReplyWithStatusCards();
+  const firstStarted = createDeferred<void>();
+  const secondStarted = createDeferred<void>();
+  const releaseFirstClose = createDeferred<void>();
+  const aborted: string[] = [];
+  const runner: CodexChatRunnerLike = {
+    async run(
+      prompt: string,
+      options: CodexChatOptions,
+      onChunk: (text: string) => Promise<void>
+    ): Promise<CodexChatResult> {
+      if (prompt === 'first') {
+        firstStarted.resolve();
+        await new Promise<void>((resolve) => {
+          options.abortSignal?.addEventListener('abort', () => {
+            aborted.push(prompt);
+            resolve();
+          }, { once: true });
+        });
+        await releaseFirstClose.promise;
+        throw new CodexChatInterruptedError();
+      }
+      if (prompt === 'second') {
+        secondStarted.resolve();
+        await new Promise<void>((resolve) => {
+          options.abortSignal?.addEventListener('abort', () => {
+            aborted.push(prompt);
+            resolve();
+          }, { once: true });
+        });
+        throw new CodexChatInterruptedError();
+      }
+      await onChunk('third reply');
+      return { sessionId: 'session-third' };
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true },
+    'codex_chat',
+    null,
+    { ids: ['cli_bot'], names: ['Doujie'] }
+  );
+  const send = (messageId: string, prompt: string): Promise<void> => router.handleEvent(textEvent({
+    messageId,
+    text: `@Doujie ${prompt}`,
+    chatId: 'oc_group',
+    chatType: 'group',
+    mentions: [{ key: '@Doujie', name: 'Doujie', id: { app_id: 'cli_bot' } }],
+  }));
+
+  try {
+    const first = send('late-1', 'first');
+    await firstStarted.promise;
+    const second = send('late-2', 'second');
+    await secondStarted.promise;
+
+    releaseFirstClose.resolve();
+    await first;
+
+    await send('late-3', 'third');
+    await second;
+
+    assert.deepEqual(aborted, ['first', 'second']);
+    assert.equal(
+      reply.texts.filter((item) => item.text === '已被新消息打断，正在处理最新消息。').length,
+      2
+    );
+    assert.equal(reply.texts.some((item) => item.text === 'third reply'), true);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
 test('Router handles /detail as a verbose Codex chat command', async () => {
   const { dir, dbPath } = createTempDbPath('doujie-router-detail');
   const store = new Store(dbPath, () => 1120);

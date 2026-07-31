@@ -197,7 +197,26 @@ export class Router {
 
     const eventType = event.header?.event_type ?? '';
     const isEditedMessage = this.isMessageUpdatedEvent(eventType);
+    const contentVersionKey = this.getMessageContentVersionKey(messageToSave);
     if (isEditedMessage) {
+      const versionKey = this.getMessageEventVersionKey(event, messageToSave);
+      const existingContent = this.store.getMessageContent(messageId);
+      if (existingContent !== null) {
+        const isNewEventVersion = this.store.recordMessageEventVersion(messageId, eventType, versionKey);
+        if (!isNewEventVersion) {
+          console.log('[router] Duplicate message edit skipped:', messageId, versionKey);
+          return;
+        }
+        const isNewContentVersion = this.store.recordMessageEventVersion(
+          messageId,
+          'message.content_v1',
+          contentVersionKey
+        );
+        if (!isNewContentVersion || (existingContent === messageToSave.text && this.store.getProcessingJob(messageId))) {
+          console.log('[router] Unchanged message edit skipped:', messageId, contentVersionKey);
+          return;
+        }
+      }
       this.store.saveEditedMessage({
         id: messageId,
         chatId: messageToSave.chatId,
@@ -206,11 +225,9 @@ export class Router {
         messageType: messageToSave.messageType,
         rawEvent: privacyDecision.rawEvent,
       });
-      const versionKey = this.getMessageEventVersionKey(event, messageToSave);
-      const isNewVersion = this.store.recordMessageEventVersion(messageId, eventType, versionKey);
-      if (!isNewVersion) {
-        console.log('[router] Duplicate message edit skipped:', messageId, versionKey);
-        return;
+      if (existingContent === null) {
+        this.store.recordMessageEventVersion(messageId, eventType, versionKey);
+        this.store.recordMessageEventVersion(messageId, 'message.content_v1', contentVersionKey);
       }
     } else {
       // Dedup check: try to save, skip if duplicate
@@ -227,6 +244,7 @@ export class Router {
         console.log('[router] Duplicate message skipped:', messageId);
         return;
       }
+      this.store.recordMessageEventVersion(messageId, 'message.content_v1', contentVersionKey);
     }
 
     if (!this.shouldProcessMessage(messageToSave)) {
@@ -361,6 +379,19 @@ export class Router {
         text: message.text,
         rawContent: message.rawContent,
         mentions: message.mentions,
+      }))
+      .digest('hex')
+      .slice(0, 24);
+    return `hash:${hash}`;
+  }
+
+  private getMessageContentVersionKey(message: MessageContent): string {
+    const hash = crypto
+      .createHash('sha256')
+      .update(JSON.stringify({
+        messageType: message.messageType,
+        text: message.text,
+        addressedToBot: this.hasBotMention(message),
       }))
       .digest('hex')
       .slice(0, 24);
