@@ -55,7 +55,7 @@ test('status command reports runtime and job counts', async () => {
     const commands = createCommandRegistry(store, createRuntime(dbPath));
     const result = await commands.get('status')?.('', dummyMessage);
 
-    assert.match(result ?? '', /豆姐状态/);
+    assert.match(result ?? '', /^Doujie Status/);
     assert.match(result ?? '', /\*\*Listener:\*\* running/);
     assert.match(result ?? '', /\*\*Restarts:\*\* 2/);
     assert.match(result ?? '', /\*\*In-flight:\*\* 1/);
@@ -86,6 +86,61 @@ test('help command is generated from command metadata', async () => {
   } finally {
     store.close();
     removeTempDir(dir);
+  }
+});
+
+test('reload command formats applied, restart-required, and sanitized failure states', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-reload-command');
+  const store = new Store(dbPath);
+  try {
+    const successRuntime = {
+      ...createRuntime(dbPath),
+      reloadConfig: async () => ({
+        ok: true as const,
+        previousVersion: 2,
+        version: 3,
+        changed: true,
+        restartRequired: ['codex.model', 'privacy.groups'],
+      }),
+    };
+    const success = await createCommandRegistry(store, successRuntime).get('reload')?.('', dummyMessage);
+    assert.match(success ?? '', /配置重载成功/);
+    assert.match(success ?? '', /2 → 3/);
+    assert.match(success ?? '', /codex\.model/);
+    assert.match(success ?? '', /privacy\.groups/);
+
+    const noChangeRuntime = {
+      ...createRuntime(dbPath),
+      reloadConfig: async () => ({
+        ok: true as const,
+        previousVersion: 3,
+        version: 3,
+        changed: false,
+        restartRequired: [],
+      }),
+    };
+    const noChange = await createCommandRegistry(store, noChangeRuntime).get('reload')?.('', dummyMessage);
+    assert.match(noChange ?? '', /3 → 3/);
+    assert.match(noChange ?? '', /no_change/);
+
+    const failureRuntime = {
+      ...createRuntime(dbPath),
+      reloadConfig: async () => ({
+        ok: false as const,
+        previousVersion: 3,
+        version: 3,
+        changed: false,
+        restartRequired: [],
+        error: 'secret: real-config-value',
+      }),
+    };
+    const failure = await createCommandRegistry(store, failureRuntime).get('reload')?.('', dummyMessage);
+    assert.match(failure ?? '', /配置重载失败/);
+    assert.match(failure ?? '', /3（未变化）/);
+    assert.match(failure ?? '', /configuration validation failed/);
+    assert.doesNotMatch(failure ?? '', /real-config-value/);
+  } finally {
+    store.close(); removeTempDir(dir);
   }
 });
 

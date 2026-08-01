@@ -574,6 +574,16 @@ export class Store {
     this.syncSearchIndex(messageId);
   }
 
+  /** Replace only the already-sanitized raw event used for audit and retry. */
+  updateMessageRawEvent(messageId: string, rawEvent: string): boolean {
+    const result = this.db.prepare(`
+      UPDATE messages
+      SET raw_event = @rawEvent
+      WHERE id = @messageId
+    `).run({ messageId, rawEvent });
+    return result.changes > 0;
+  }
+
   /** Save a processed result. */
   saveProcessed(result: ProcessedMessage): void {
     const tags = this.canonicalizeTags(result.tags);

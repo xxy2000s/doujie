@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { FeishuEvent, FeishuIdentity, FeishuMention } from './types.js';
 import type { EventHandler } from './listener.js';
 import { MESSAGE_UPDATED_EVENTS, redactListenerLog } from './listener.js';
+import { normalizeDirectParentId } from './quoted-message.js';
 
 export type FeishuListMessage = {
   message_id: string;
@@ -11,6 +12,9 @@ export type FeishuListMessage = {
   msg_type?: string;
   content?: string;
   mentions?: FeishuMention[];
+  parent_id?: string;
+  reply_to?: string;
+  root_id?: string;
   sender?: {
     id?: string;
     id_type?: string;
@@ -69,6 +73,7 @@ export function listMessageToEditedEvent(message: FeishuListMessage, fallbackCha
   const content = contentToRawJson(messageType, message.content || '');
   const senderId = message.sender?.id || 'unknown';
   const versionKey = getListMessageVersionKey(message);
+  const parentId = normalizeDirectParentId(message.parent_id, message.reply_to);
 
   return {
     schema: '2.0',
@@ -95,6 +100,9 @@ export function listMessageToEditedEvent(message: FeishuListMessage, fallbackCha
         message_type: messageType,
         content,
         mentions: message.mentions || [],
+        ...(parentId ? { parent_id: parentId } : {}),
+        reply_to: message.reply_to,
+        root_id: message.root_id,
         update_time: message.update_time,
         updated: true,
       },
@@ -225,16 +233,18 @@ function contentToRawJson(messageType: string, content: string): string {
 }
 
 function getListMessageVersionKey(message: FeishuListMessage): string {
-  if (message.update_time) return `update:${message.update_time}`;
-  return `hash:${crypto
+  const hash = crypto
     .createHash('sha256')
     .update(JSON.stringify({
       content: message.content || '',
       mentions: message.mentions || [],
+      parentId: normalizeDirectParentId(message.parent_id, message.reply_to),
+      rootId: message.root_id,
       updated: message.updated || false,
     }))
     .digest('hex')
-    .slice(0, 24)}`;
+    .slice(0, 24);
+  return message.update_time ? `update:${message.update_time}:hash:${hash}` : `hash:${hash}`;
 }
 
 function getEventPollKey(event: FeishuEvent): string {

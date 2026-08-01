@@ -24,6 +24,9 @@ export interface FeishuEvent {
       message_type: string;
       content: string;
       mentions?: FeishuMention[];
+      parent_id?: string;
+      reply_to?: string;
+      root_id?: string;
       update_time?: string;
       updated?: boolean;
     };
@@ -55,6 +58,8 @@ export interface MessageContent {
   text: string;
   rawContent: string;
   mentions: FeishuMention[];
+  parentId?: string;
+  rootId?: string;
 }
 
 /** Result from AI processing (summary + classification) */
@@ -167,6 +172,20 @@ export type PrivacyGroupRule = {
   contextEnabled: boolean;
   contextMaxMessages: number;
   contextMaxChars: number;
+  features?: FeatureOverrides;
+};
+
+export type QuotedMessageFeatureConfig = {
+  enabled: boolean;
+  maxChars: number;
+};
+
+export type FeatureConfig = {
+  quotedMessage: QuotedMessageFeatureConfig;
+};
+
+export type FeatureOverrides = {
+  quotedMessage?: Partial<QuotedMessageFeatureConfig>;
 };
 
 export interface PrivacyConfig {
@@ -182,6 +201,7 @@ export interface PrivacyConfig {
 }
 
 export interface AppConfig {
+  features: FeatureConfig;
   codex: {
     model: string;
     workdir: string;

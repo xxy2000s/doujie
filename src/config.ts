@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import yaml from 'js-yaml';
-import type { AppConfig, FeishuIdentity, PrivacyPattern } from './types.js';
+import type { AppConfig, FeatureOverrides, FeishuIdentity, PrivacyPattern, QuotedMessageFeatureConfig } from './types.js';
 
 export const CONFIG_DIR = path.join(os.homedir(), '.doujie');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.yaml');
@@ -11,6 +11,7 @@ const DEFAULT_BACKUP_DIR = path.join(CONFIG_DIR, 'backups');
 const DEFAULT_EXPORT_DIR = path.join(CONFIG_DIR, 'exports');
 const DEFAULT_ATTACHMENT_CACHE_DIR = path.join(CONFIG_DIR, 'attachments');
 const DEFAULT_CONTROL_SESSION_DIR = path.join(CONFIG_DIR, 'sessions');
+export const DEFAULT_QUOTED_MESSAGE_MAX_CHARS = 20000;
 
 export class ConfigError extends Error {
   constructor(message: string) {
@@ -39,10 +40,11 @@ function loadYamlConfig(): Record<string, unknown> {
   }
   const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
   const parsed = yaml.load(raw);
-  if (typeof parsed === 'object' && parsed !== null) {
+  if (parsed === undefined || parsed === null) return {};
+  if (typeof parsed === 'object' && !Array.isArray(parsed)) {
     return parsed as Record<string, unknown>;
   }
-  return {};
+  throw new ConfigError('config root must be an object');
 }
 
 function getNestedValue(
@@ -71,6 +73,7 @@ export function buildConfig(
   const feishuAs =
     validateFeishuIdentity(getNestedValue(yamlConfig, 'feishu', 'as'), 'feishu.as') || 'bot';
   return {
+    features: validateGlobalFeatures(getNestedValue(yamlConfig, 'features')),
     codex: {
       model:
         validateOptionalString(env.CODEX_MODEL, 'CODEX_MODEL') ||
@@ -190,6 +193,7 @@ function validatePrivacyGroups(value: unknown) {
     const context = typeof record.context === 'object' && record.context !== null && !Array.isArray(record.context)
       ? record.context as Record<string, unknown>
       : {};
+    const features = validateFeatureOverrides(record.features, `${label}.features`);
     return {
       chatId,
       allowUserIds: validateOptionalStringArray(record.allow_user_ids, `${label}.allow_user_ids`) || [],
@@ -197,8 +201,53 @@ function validatePrivacyGroups(value: unknown) {
       contextEnabled: validateOptionalBoolean(context.enabled, `${label}.context.enabled`) ?? false,
       contextMaxMessages: validateOptionalPositiveInteger(context.max_messages, `${label}.context.max_messages`) || 50,
       contextMaxChars: validateOptionalPositiveInteger(context.max_chars, `${label}.context.max_chars`) || 30000,
+      ...(features ? { features } : {}),
     };
   });
+}
+
+function validateQuotedMessageConfig(value: unknown, label: string): QuotedMessageFeatureConfig {
+  if (value === undefined || value === null) {
+    return { enabled: false, maxChars: DEFAULT_QUOTED_MESSAGE_MAX_CHARS };
+  }
+  const record = validateObject(value, label);
+  return {
+    enabled: validateOptionalBoolean(record.enabled, `${label}.enabled`) ?? false,
+    maxChars: validateOptionalPositiveInteger(record.max_chars, `${label}.max_chars`) ?? DEFAULT_QUOTED_MESSAGE_MAX_CHARS,
+  };
+}
+
+function validateGlobalFeatures(value: unknown): AppConfig['features'] {
+  if (value === undefined || value === null) {
+    return { quotedMessage: validateQuotedMessageConfig(undefined, 'features.quoted_message') };
+  }
+  const record = validateObject(value, 'features');
+  return {
+    quotedMessage: validateQuotedMessageConfig(record.quoted_message, 'features.quoted_message'),
+  };
+}
+
+function validateFeatureOverrides(value: unknown, label: string): FeatureOverrides | undefined {
+  if (value === undefined || value === null) return undefined;
+  const record = validateObject(value, label);
+  if (record.quoted_message === undefined || record.quoted_message === null) return undefined;
+  const quoted = validateObject(record.quoted_message, `${label}.quoted_message`);
+  const enabled = validateOptionalBoolean(quoted.enabled, `${label}.quoted_message.enabled`);
+  const maxChars = validateOptionalPositiveInteger(quoted.max_chars, `${label}.quoted_message.max_chars`);
+  if (enabled === undefined && maxChars === undefined) return undefined;
+  return {
+    quotedMessage: {
+      ...(enabled === undefined ? {} : { enabled }),
+      ...(maxChars === undefined ? {} : { maxChars }),
+    },
+  };
+}
+
+function validateObject(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ConfigError(`${label} must be an object`);
+  }
+  return value as Record<string, unknown>;
 }
 
 function validateOptionalString(value: unknown, label: string): string | undefined {

@@ -14,6 +14,9 @@ import type { AIResult, FeishuEvent, PrivacyConfig } from '../src/types.js';
 import type { ReactionEmoji } from '../src/reaction.js';
 import type { StatusCardParams } from '../src/reply.js';
 import { aiResult, createTempDbPath, removeTempDir, textEvent } from './helpers.js';
+import { buildConfig } from '../src/config.js';
+import { RuntimeConfigManager } from '../src/runtime-config.js';
+import type { QuotedMessageProvider } from '../src/quoted-message.js';
 
 type FakeReply = {
   summaries: Array<{ messageId: string; result: AIResult }>;
@@ -141,6 +144,9 @@ function editedTextEvent(params: {
   senderId?: string;
   updateTime?: string;
   mentions?: FeishuEvent['event']['message']['mentions'];
+  parentId?: string;
+  replyTo?: string;
+  rootId?: string;
 }): FeishuEvent {
   const sender = { sender_id: { open_id: params.senderId ?? 'ou_test' } };
   return {
@@ -162,6 +168,9 @@ function editedTextEvent(params: {
         update_time: params.updateTime,
         updated: true,
         ...(params.mentions ? { mentions: params.mentions } : {}),
+        ...(params.parentId ? { parent_id: params.parentId } : {}),
+        ...(params.replyTo ? { reply_to: params.replyTo } : {}),
+        ...(params.rootId ? { root_id: params.rootId } : {}),
       },
     },
   };
@@ -2183,5 +2192,585 @@ test('Router records failed file attachment downloads without failing processing
   } finally {
     store.close();
     removeTempDir(dir);
+  }
+});
+
+test('Router includes one bounded direct-parent quote in the default Codex prompt', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-quote-parent');
+  const store = new Store(dbPath, () => 19000);
+  const reply = createFakeReply();
+  const codex = createFakeCodexChatRunner(['ok']);
+  const config = buildConfig({ features: { quoted_message: { enabled: true, max_chars: 4 } } }, {});
+  const manager = new RuntimeConfigManager(config, () => config);
+  const fetchedIds: string[] = [];
+  const quoted: QuotedMessageProvider = {
+    async fetch(messageId) {
+      fetchedIds.push(messageId);
+      return { messageId, text: '123456' };
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), config.privacy,
+    null, null, null, codex.runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: [], names: [] }, null, null, manager, quoted
+  );
+  try {
+    await router.handleEvent(textEvent({
+      messageId: 'quote-parent-1', text: 'current request',
+      parentId: 'om_parent', replyTo: 'om_reply_fallback', rootId: 'om_root',
+    }));
+
+    assert.deepEqual(fetchedIds, ['om_parent']);
+    assert.match(codex.prompts[0] ?? '', /CURRENT USER REQUEST \(the only instruction to execute\)\ncurrent request/);
+    assert.match(codex.prompts[0] ?? '', /UNTRUSTED QUOTED FEISHU MESSAGE/);
+    assert.match(codex.prompts[0] ?? '', /> 1234\n\[QUOTED MESSAGE TRUNCATED\]/);
+    assert.doesNotMatch(codex.prompts[0] ?? '', /12345/);
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router skips quote lookup when disabled or before the group mention gate', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-quote-gates');
+  const store = new Store(dbPath, () => 19100);
+  const reply = createFakeReply();
+  const codex = createFakeCodexChatRunner(['ok']);
+  const disabled = buildConfig({}, {});
+  const enabled = buildConfig({ features: { quoted_message: { enabled: true } } }, {});
+  const manager = new RuntimeConfigManager(disabled, () => enabled);
+  let fetches = 0;
+  const quoted: QuotedMessageProvider = {
+    async fetch(messageId) { fetches += 1; return { messageId, text: 'quote' }; },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), disabled.privacy,
+    null, null, null, codex.runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: [], names: ['豆姐'] }, null, null, manager, quoted
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'quote-disabled', text: 'plain', parentId: 'om_parent' }));
+    await manager.reload();
+    await router.handleEvent(textEvent({ messageId: 'quote-no-relationship', text: 'no relation' }));
+    await router.handleEvent(textEvent({
+      messageId: 'quote-no-mention', text: 'group plain', parentId: 'om_parent',
+      chatId: 'oc_group', chatType: 'group',
+    }));
+    assert.equal(fetches, 0);
+    assert.deepEqual(codex.prompts, ['plain', 'no relation']);
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router falls back to current text on unavailable or failed root quote lookup', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-quote-fallback');
+  const store = new Store(dbPath, () => 19200);
+  const reply = createFakeReply();
+  const codex = createFakeCodexChatRunner(['ok']);
+  const config = buildConfig({ features: { quoted_message: { enabled: true } } }, {});
+  const manager = new RuntimeConfigManager(config, () => config);
+  const ids: string[] = [];
+  const quoted: QuotedMessageProvider = {
+    async fetch(messageId) {
+      ids.push(messageId);
+      if (messageId === 'om_fail') throw new Error('lookup failed without message body');
+      return null;
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), config.privacy,
+    null, null, null, codex.runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: [], names: [] }, null, null, manager, quoted
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'quote-root-null', text: 'first', rootId: 'om_root' }));
+    await router.handleEvent(textEvent({ messageId: 'quote-root-fail', text: 'second', rootId: 'om_fail' }));
+    assert.deepEqual(ids, ['om_root', 'om_fail']);
+    assert.deepEqual(codex.prompts, ['first', 'second']);
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router applies combined-content privacy skip and redaction to quoted text', async () => {
+  const runCase = async (action: 'skip' | 'redact'): Promise<{ prompts: string[]; replies: string[] }> => {
+    const { dir, dbPath } = createTempDbPath(`doujie-router-quote-privacy-${action}`);
+    const store = new Store(dbPath, () => 19300);
+    const reply = createFakeReply();
+    const codex = createFakeCodexChatRunner(['ok']);
+    const config = buildConfig({
+      features: { quoted_message: { enabled: true } },
+      privacy: action === 'skip'
+        ? { skip_patterns: [{ name: 'quote', pattern: 'QUOTE-SECRET' }] }
+        : { redact_patterns: [{ name: 'quote', pattern: 'QUOTE-SECRET', replacement: '[QUOTE]' }] },
+    }, {});
+    const manager = new RuntimeConfigManager(config, () => config);
+    const router = new Router(
+      createCommandRegistry(store),
+      { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+      store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), config.privacy,
+      null, null, null, codex.runner,
+      { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+      'codex_chat', null, { ids: [], names: [] }, null, null, manager,
+      { async fetch(messageId) { return { messageId, text: 'QUOTE-SECRET' }; } }
+    );
+    try {
+      await router.handleEvent(textEvent({ messageId: `quote-${action}`, text: 'current', parentId: 'om_parent' }));
+      return { prompts: codex.prompts, replies: reply.texts.map((item) => item.text) };
+    } finally {
+      store.close(); removeTempDir(dir);
+    }
+  };
+
+  const skipped = await runCase('skip');
+  assert.deepEqual(skipped.prompts, []);
+  assert.deepEqual(skipped.replies, ['Skipped by privacy rule: privacy_skip:quote']);
+  const redacted = await runCase('redact');
+  assert.equal(redacted.prompts.length, 1);
+  assert.match(redacted.prompts[0] ?? '', /\[QUOTE\]/);
+  assert.doesNotMatch(redacted.prompts[0] ?? '', /QUOTE-SECRET/);
+});
+
+test('Router keeps an in-flight request on its captured quote snapshot across reload', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-quote-snapshot');
+  const store = new Store(dbPath, () => 19400);
+  const reply = createFakeReply();
+  const codex = createFakeCodexChatRunner(['ok']);
+  const enabled = buildConfig({ features: { quoted_message: { enabled: true, max_chars: 3 } } }, {});
+  const disabled = buildConfig({ features: { quoted_message: { enabled: false, max_chars: 20 } } }, {});
+  const manager = new RuntimeConfigManager(enabled, () => disabled);
+  const started = createDeferred<void>();
+  const release = createDeferred<void>();
+  const fetchedIds: string[] = [];
+  const quoted: QuotedMessageProvider = {
+    async fetch(messageId) {
+      fetchedIds.push(messageId);
+      started.resolve();
+      await release.promise;
+      return { messageId, text: 'abcdef' };
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), enabled.privacy,
+    null, null, null, codex.runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: [], names: [] }, null, null, manager, quoted
+  );
+  try {
+    const handling = router.handleEvent(textEvent({ messageId: 'quote-snapshot', text: 'current', parentId: 'om_parent' }));
+    await started.promise;
+    await manager.reload();
+    release.resolve();
+    await handling;
+
+    assert.match(codex.prompts[0] ?? '', /> abc\n\[QUOTED MESSAGE TRUNCATED\]/);
+    assert.equal(manager.getSnapshot().config.features.quotedMessage.enabled, false);
+    await router.handleEvent(textEvent({ messageId: 'quote-after-reload', text: 'next', parentId: 'om_next' }));
+    assert.deepEqual(fetchedIds, ['om_parent']);
+    assert.equal(codex.prompts[1], 'next');
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router authorizes /reload before invoking its side effect', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-reload-gate');
+  const store = new Store(dbPath, () => 19500);
+  const reply = createFakeReply();
+  let reloads = 0;
+  const runtime = {
+    startedAt: 0,
+    inFlight: new Set<string>(),
+    dbPath,
+    backupDir: dir,
+    exportDir: dir,
+    controlSessionDir: dir,
+    getListenerStatus: () => ({ state: 'running' as const, lastEventAt: null, restartCount: 0 }),
+    reloadConfig: async () => {
+      reloads += 1;
+      return { ok: true, previousVersion: 1, version: 2, changed: true, restartRequired: [] };
+    },
+  };
+  const privacy: PrivacyConfig = {
+    allowChatIds: [], denyChatIds: [], allowUserIds: [], denyUserIds: [], skipPatterns: [], redactPatterns: [],
+    adminUserIds: ['ou_admin'], privateAllowUserIds: ['ou_admin', 'ou_member'], groups: [],
+  };
+  const router = new Router(
+    createCommandRegistry(store, runtime),
+    { async process(): Promise<AIResult> { throw new Error('AI should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), privacy,
+    null, null, null, undefined, undefined, undefined, null, { ids: [], names: [] }, null
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'reload-member', text: '/reload', senderId: 'ou_member' }));
+    assert.equal(reloads, 0);
+    assert.equal(reply.texts[0]?.text, '/reload 仅管理员可用。');
+    await router.handleEvent(textEvent({ messageId: 'reload-admin', text: '/reload', senderId: 'ou_admin' }));
+    assert.equal(reloads, 1);
+    assert.match(reply.texts[1]?.text ?? '', /配置重载成功/);
+    assert.match(reply.texts[1]?.text ?? '', /1 → 2/);
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router denies quote lookup before the group Agent permission gate', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-quote-agent-permission');
+  const store = new Store(dbPath, () => 19600);
+  const reply = createFakeReply();
+  const codex = createFakeCodexChatRunner(['should not run']);
+  const config = buildConfig({
+    features: { quoted_message: { enabled: true } },
+    privacy: {
+      groups: [{
+        chat_id: 'oc_group',
+        allow_user_ids: ['ou_member'],
+        allow_agent_user_ids: [],
+      }],
+    },
+  }, {});
+  let fetches = 0;
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), config.privacy,
+    null, null, null, codex.runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: ['cli_bot'], names: [] }, null, null,
+    new RuntimeConfigManager(config, () => config),
+    { async fetch(messageId) { fetches += 1; return { messageId, text: 'quote' }; } }
+  );
+  try {
+    await router.handleEvent(textEvent({
+      messageId: 'quote-agent-denied',
+      text: '@Doujie current',
+      senderId: 'ou_member',
+      chatId: 'oc_group',
+      chatType: 'group',
+      parentId: 'om_parent',
+      mentions: [{ key: '@Doujie', id: { app_id: 'cli_bot' } }],
+    }));
+
+    assert.equal(fetches, 0);
+    assert.deepEqual(codex.prompts, []);
+    assert.match(reply.texts[0]?.text ?? '', /没有权限调度 Codex Agent/);
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router treats an edited reply relationship as a new prompt generation', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-quote-edit-relationship');
+  const store = new Store(dbPath, () => 19700);
+  const reply = createFakeReply();
+  const codex = createFakeCodexChatRunner(['first', 'second']);
+  const config = buildConfig({ features: { quoted_message: { enabled: true } } }, {});
+  const ids: string[] = [];
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), config.privacy,
+    null, null, null, codex.runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: [], names: [] }, null, null,
+    new RuntimeConfigManager(config, () => config),
+    { async fetch(messageId) { ids.push(messageId); return { messageId, text: `quote:${messageId}` }; } }
+  );
+  try {
+    await router.handleEvent(textEvent({
+      messageId: 'quote-edit-relation', text: 'same current text', replyTo: 'om_parent_1',
+    }));
+    await router.handleEvent(editedTextEvent({
+      messageId: 'quote-edit-relation', text: 'same current text', replyTo: 'om_parent_2',
+    }));
+
+    assert.deepEqual(ids, ['om_parent_1', 'om_parent_2']);
+    assert.match(codex.prompts[0] ?? '', /quote:om_parent_1/);
+    assert.match(codex.prompts[1] ?? '', /quote:om_parent_2/);
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router resolves a receive-event reply relationship and suppresses poller enrichment replay', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-quote-receive-poller-race');
+  const store = new Store(dbPath, () => 19750);
+  const reply = createFakeReply();
+  const codex = createFakeCodexChatRunner(['once']);
+  const config = buildConfig({ features: { quoted_message: { enabled: true } } }, {});
+  const fetched: string[] = [];
+  const resolving = createDeferred<void>();
+  const releaseRelationship = createDeferred<void>();
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), config.privacy,
+    null, null, null, codex.runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: [], names: [] }, null, null,
+    new RuntimeConfigManager(config, () => config),
+    {
+      async resolveRelationship() {
+        resolving.resolve();
+        await releaseRelationship.promise;
+        return { parentId: 'om_parent' };
+      },
+      async fetch(messageId) { fetched.push(messageId); return { messageId, text: 'quoted parent' }; },
+    }
+  );
+  try {
+    const receiveHandling = router.handleEvent(textEvent({
+      messageId: 'quote-race', text: 'current request', rootId: 'om_root_only',
+    }));
+    await resolving.promise;
+    await router.handleEvent(editedTextEvent({
+      messageId: 'quote-race', text: 'current request', replyTo: 'om_parent', rootId: 'om_root_only',
+    }));
+    releaseRelationship.resolve();
+    await receiveHandling;
+
+    assert.deepEqual(fetched, ['om_parent']);
+    assert.equal(codex.prompts.length, 1);
+    assert.match(codex.prompts[0] ?? '', /quoted parent/);
+    assert.equal(store.getProcessingJob('quote-race')?.status, 'replied');
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router persists a resolver-first direct parent before a later poller observation', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-quote-resolver-first');
+  const store = new Store(dbPath, () => 19755);
+  const reply = createFakeReply();
+  const codex = createFakeCodexChatRunner(['once']);
+  const config = buildConfig({ features: { quoted_message: { enabled: true } } }, {});
+  let relationshipResolutions = 0;
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), config.privacy,
+    null, null, null, codex.runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: [], names: [] }, null, null,
+    new RuntimeConfigManager(config, () => config),
+    {
+      async resolveRelationship() { relationshipResolutions += 1; return { parentId: 'om_parent' }; },
+      async fetch(messageId) { return { messageId, text: 'quoted parent' }; },
+    }
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'quote-resolver-first', text: 'current request' }));
+    const stored = JSON.parse(store.getMessageRawEvent('quote-resolver-first') ?? '{}') as FeishuEvent;
+    assert.equal(stored.event.message.parent_id, 'om_parent');
+
+    await router.handleEvent(editedTextEvent({
+      messageId: 'quote-resolver-first', text: 'current request', replyTo: 'om_parent',
+    }));
+    assert.equal(relationshipResolutions, 1);
+    assert.equal(codex.prompts.length, 1);
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router retry reuses the persisted resolver-discovered direct parent', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-quote-resolved-retry');
+  const store = new Store(dbPath, () => 19757);
+  const reply = createFakeReply();
+  const config = buildConfig({ features: { quoted_message: { enabled: true } } }, {});
+  let relationshipResolutions = 0;
+  let runs = 0;
+  const fetched: string[] = [];
+  const runner: CodexChatRunnerLike = {
+    async run(): Promise<CodexChatResult> {
+      runs += 1;
+      if (runs === 1) throw new Error('temporary failure');
+      return { sessionId: 'resolved-retry-session' };
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), config.privacy,
+    null, null, null, runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: [], names: [] }, null, null,
+    new RuntimeConfigManager(config, () => config),
+    {
+      async resolveRelationship() { relationshipResolutions += 1; return { parentId: 'om_parent' }; },
+      async fetch(messageId) { fetched.push(messageId); return { messageId, text: 'quoted parent' }; },
+    }
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'quote-resolved-retry', text: 'current request' }));
+    assert.equal(store.getProcessingJob('quote-resolved-retry')?.status, 'failed');
+    await router.handleEvent(textEvent({
+      messageId: 'quote-resolved-retry-command', text: '/retry quote-resolved-retry',
+    }));
+
+    assert.equal(relationshipResolutions, 1);
+    assert.deepEqual(fetched, ['om_parent', 'om_parent']);
+    assert.equal(store.getProcessingJob('quote-resolved-retry')?.status, 'replied');
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router ignores relationship-only poller enrichment when quoting is disabled', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-quote-disabled-race');
+  const store = new Store(dbPath, () => 19760);
+  const reply = createFakeReply();
+  const codex = createFakeCodexChatRunner(['once']);
+  const config = buildConfig({ features: { quoted_message: { enabled: false } } }, {});
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), config.privacy,
+    null, null, null, codex.runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: [], names: [] }, null, null,
+    new RuntimeConfigManager(config, () => config),
+    { async fetch(messageId) { return { messageId, text: 'must not be read' }; } }
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'quote-disabled-race', text: 'current request' }));
+    await router.handleEvent(editedTextEvent({
+      messageId: 'quote-disabled-race', text: 'current request',
+      parentId: 'om_parent', replyTo: 'om_parent',
+    }));
+
+    assert.deepEqual(codex.prompts, ['current request']);
+    assert.equal(store.getProcessingJob('quote-disabled-race')?.status, 'replied');
+    const stored = JSON.parse(store.getMessageRawEvent('quote-disabled-race') ?? '{}') as FeishuEvent;
+    assert.equal(stored.event.message.parent_id, 'om_parent');
+    assert.equal(stored.event.message.reply_to, 'om_parent');
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router reprocesses when reply relationship enrichment also changes effective text', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-quote-enrichment-text-change');
+  const store = new Store(dbPath, () => 19762);
+  const reply = createFakeReply();
+  const codex = createFakeCodexChatRunner(['first', 'second']);
+  const config = buildConfig({ features: { quoted_message: { enabled: true } } }, {});
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), config.privacy,
+    null, null, null, codex.runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: [], names: [] }, null, null,
+    new RuntimeConfigManager(config, () => config),
+    { async fetch(messageId) { return { messageId, text: 'quoted parent' }; } }
+  );
+  try {
+    await router.handleEvent(textEvent({
+      messageId: 'quote-enrichment-text-change', text: 'first request',
+    }));
+    await router.handleEvent(editedTextEvent({
+      messageId: 'quote-enrichment-text-change', text: 'changed request',
+      parentId: 'om_parent', replyTo: 'om_parent', updateTime: '1783530002500',
+    }));
+
+    assert.equal(codex.prompts.length, 2);
+    assert.equal(codex.prompts[0], 'first request');
+    assert.match(codex.prompts[1] ?? '', /changed request/);
+    assert.match(codex.prompts[1] ?? '', /quoted parent/);
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router combines update_time with text and known-parent generations', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-quote-same-update-generations');
+  const store = new Store(dbPath, () => 19764);
+  const reply = createFakeReply();
+  const codex = createFakeCodexChatRunner(['first', 'second', 'third']);
+  const config = buildConfig({ features: { quoted_message: { enabled: true } } }, {});
+  const fetched: string[] = [];
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), config.privacy,
+    null, null, null, codex.runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: [], names: [] }, null, null,
+    new RuntimeConfigManager(config, () => config),
+    { async fetch(messageId) { fetched.push(messageId); return { messageId, text: `quote:${messageId}` }; } }
+  );
+  try {
+    await router.handleEvent(textEvent({
+      messageId: 'quote-same-update', text: 'first request', parentId: 'om_parent_1',
+    }));
+    await router.handleEvent(editedTextEvent({
+      messageId: 'quote-same-update', text: 'second request', parentId: 'om_parent_1',
+      updateTime: '1783530002600',
+    }));
+    await router.handleEvent(editedTextEvent({
+      messageId: 'quote-same-update', text: 'second request', parentId: 'om_parent_2',
+      updateTime: '1783530002600',
+    }));
+
+    assert.equal(codex.prompts.length, 3);
+    assert.deepEqual(fetched, ['om_parent_1', 'om_parent_1', 'om_parent_2']);
+    assert.match(codex.prompts[1] ?? '', /second request/);
+    assert.match(codex.prompts[2] ?? '', /quote:om_parent_2/);
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router restores reply relationships when retrying a failed message', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-quote-retry');
+  const store = new Store(dbPath, () => 19800);
+  const reply = createFakeReply();
+  const config = buildConfig({ features: { quoted_message: { enabled: true } } }, {});
+  const ids: string[] = [];
+  let runs = 0;
+  const runner: CodexChatRunnerLike = {
+    async run(): Promise<CodexChatResult> {
+      runs += 1;
+      if (runs === 1) throw new Error('temporary failure');
+      return { sessionId: 'retry-session' };
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), config.privacy,
+    null, null, null, runner,
+    { model: 'test', workdir: dir, sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    'codex_chat', null, { ids: [], names: [] }, null, null,
+    new RuntimeConfigManager(config, () => config),
+    { async fetch(messageId) { ids.push(messageId); return { messageId, text: 'quoted' }; } }
+  );
+  try {
+    await router.handleEvent(textEvent({
+      messageId: 'quote-retry-target', text: 'current', replyTo: 'om_retry_parent',
+    }));
+    assert.equal(store.getProcessingJob('quote-retry-target')?.status, 'failed');
+
+    await router.handleEvent(textEvent({
+      messageId: 'quote-retry-command', text: '/retry quote-retry-target',
+    }));
+
+    assert.deepEqual(ids, ['om_retry_parent', 'om_retry_parent']);
+    assert.equal(runs, 2);
+    assert.equal(store.getProcessingJob('quote-retry-target')?.status, 'replied');
+  } finally {
+    store.close(); removeTempDir(dir);
   }
 });

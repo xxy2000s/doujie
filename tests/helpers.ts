@@ -20,6 +20,9 @@ export function textEvent(params: {
   senderId?: string;
   senderAtEventRoot?: boolean;
   mentions?: FeishuMention[];
+  parentId?: string;
+  replyTo?: string;
+  rootId?: string;
 }): FeishuEvent {
   const sender = { sender_id: { open_id: params.senderId ?? 'ou_test' } };
   return {
@@ -39,6 +42,9 @@ export function textEvent(params: {
         message_type: 'text',
         content: JSON.stringify({ text: params.text }),
         ...(params.mentions ? { mentions: params.mentions } : {}),
+        ...(params.parentId ? { parent_id: params.parentId } : {}),
+        ...(params.replyTo ? { reply_to: params.replyTo } : {}),
+        ...(params.rootId ? { root_id: params.rootId } : {}),
       },
     },
   };

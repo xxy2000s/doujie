@@ -9,6 +9,8 @@ import { createErrorsHandler } from './errors.js';
 import { createBackupHandler, createCleanupHandler, createExportHandler } from './maintenance.js';
 import { createSessionHandler, createSessionsHandler } from './sessions.js';
 import { createAgentSessionsHandler } from './agent-sessions.js';
+import { createReloadHandler } from './reload.js';
+import type { ConfigReloadResult } from '../runtime-config.js';
 
 export type CommandRuntime = {
   startedAt: number;
@@ -20,6 +22,7 @@ export type CommandRuntime = {
   agentSessionRegistryPath?: string;
   clock?: () => number;
   getListenerStatus(): ListenerStatus;
+  reloadConfig?: () => Promise<ConfigReloadResult>;
 };
 
 function defaultRuntime(): CommandRuntime {
@@ -123,6 +126,12 @@ export function createCommandDefinitions(
       usage: 'detail <prompt>',
       description: 'Run a Codex CLI turn with detailed events',
       handler: async (): Promise<string> => 'Codex detail mode is handled by the router.',
+    },
+    {
+      name: 'reload',
+      usage: 'reload',
+      description: 'Reload validated runtime feature configuration',
+      handler: createReloadHandler(runtime.reloadConfig),
     },
     {
       name: 'status',

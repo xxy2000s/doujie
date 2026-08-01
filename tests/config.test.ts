@@ -38,6 +38,7 @@ test('buildConfig accepts valid YAML and environment overrides', () => {
   assert.equal(config.privacy.privateAllowUserIds, null);
   assert.deepEqual(config.privacy.groups, []);
   assert.equal(config.attachments.ocrCommand, null);
+  assert.deepEqual(config.features.quotedMessage, { enabled: false, maxChars: 20000 });
 });
 
 test('buildConfig accepts storage maintenance directories', () => {
@@ -173,5 +174,45 @@ test('buildConfig rejects invalid privacy regex', () => {
   assert.throws(
     () => buildConfig({ privacy: { skip_patterns: [{ name: 'bad', pattern: '[' }] } }, {}),
     /privacy\.skip_patterns\[0\]\.pattern is not a valid regex/
+  );
+});
+
+test('buildConfig accepts global and per-group quoted-message settings', () => {
+  const config = buildConfig({
+    features: { quoted_message: { enabled: true, max_chars: 16000 } },
+    privacy: {
+      groups: [{
+        chat_id: 'oc_team',
+        features: { quoted_message: { enabled: false, max_chars: 9000 } },
+      }],
+    },
+  }, {});
+
+  assert.deepEqual(config.features.quotedMessage, { enabled: true, maxChars: 16000 });
+  assert.deepEqual(config.privacy.groups?.[0]?.features, {
+    quotedMessage: { enabled: false, maxChars: 9000 },
+  });
+});
+
+test('buildConfig validates quoted-message object fields and positive limits', () => {
+  assert.throws(
+    () => buildConfig({ features: true }, {}),
+    /features must be an object/
+  );
+  assert.throws(
+    () => buildConfig({ features: { quoted_message: true } }, {}),
+    /features\.quoted_message must be an object/
+  );
+  assert.throws(
+    () => buildConfig({ features: { quoted_message: { enabled: 'sometimes' } } }, {}),
+    /features\.quoted_message\.enabled must be a boolean/
+  );
+  assert.throws(
+    () => buildConfig({ features: { quoted_message: { max_chars: 0 } } }, {}),
+    /features\.quoted_message\.max_chars must be a positive integer/
+  );
+  assert.throws(
+    () => buildConfig({ privacy: { groups: [{ chat_id: 'oc_1', features: { quoted_message: { max_chars: 1.5 } } }] } }, {}),
+    /privacy\.groups\[0\]\.features\.quoted_message\.max_chars must be a positive integer/
   );
 });

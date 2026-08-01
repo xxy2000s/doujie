@@ -8,7 +8,7 @@ const COMMAND_GROUPS: Array<{ title: string; names: string[] }> = [
   { title: '会话控制', names: ['new', 'codex', 'detail', 'agent-sessions'] },
   { title: '记忆检索', names: ['ask', 'search', 'recent'] },
   { title: '消息整理', names: ['save', 'digest', 'skip', 'redo', 'retag', 'merge-tag'] },
-  { title: '运行状态', names: ['status', 'session', 'sessions', 'errors'] },
+  { title: '运行状态', names: ['status', 'reload', 'session', 'sessions', 'errors'] },
   { title: '数据维护', names: ['backup', 'export', 'cleanup'] },
 ];
 

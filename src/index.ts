@@ -16,6 +16,8 @@ import { createLarkAttachmentDownloader } from './attachments.js';
 import { createAttachmentExtractor } from './attachment-extractor.js';
 import type { AIResult, FeishuEvent, PrivacyConfig } from './types.js';
 import { LarkGroupContextProvider } from './group-context.js';
+import { RuntimeConfigManager } from './runtime-config.js';
+import { LarkQuotedMessageProvider } from './quoted-message.js';
 
 let activePrivacyConfig: PrivacyConfig = DEFAULT_PRIVACY_CONFIG;
 
@@ -28,6 +30,7 @@ async function main(): Promise<void> {
 
   // Initialize configuration
   const config = loadConfig();
+  const runtimeConfigManager = new RuntimeConfigManager(config, loadConfig);
   activePrivacyConfig = config.privacy;
   console.log('[doujie] Config loaded');
   console.log('[doujie] Codex model:', config.codex.model);
@@ -54,6 +57,7 @@ async function main(): Promise<void> {
     backupDir: config.storage.backupDir,
     exportDir: config.storage.exportDir,
     controlSessionDir: config.codex.controlSessionDir,
+    reloadConfig: () => runtimeConfigManager.reload(),
     getListenerStatus: () => ({ state: 'stopped' as const, lastEventAt: null, restartCount: 0 }),
   };
   const commands = createCommandRegistry(store, runtime);
@@ -109,7 +113,9 @@ async function main(): Promise<void> {
       names: config.feishu.botMentionNames,
     },
     agentSessionIntentController,
-    new LarkGroupContextProvider('user')
+    new LarkGroupContextProvider('user'),
+    runtimeConfigManager,
+    new LarkQuotedMessageProvider('user')
   );
 
   // Event handler

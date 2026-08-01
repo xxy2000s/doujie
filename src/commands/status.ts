@@ -1,7 +1,7 @@
 import type { CommandHandler, MessageContent } from '../types.js';
 import type { Store } from '../store.js';
 import type { CommandRuntime } from './index.js';
-import { commandSection, commandTitle, field, joinBlocks } from './format.js';
+import { commandSection, field, joinBlocks } from './format.js';
 
 function formatDuration(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -32,7 +32,7 @@ export function createStatusHandler(
       : 'none';
 
     return joinBlocks([
-      commandTitle('豆姐状态'),
+      'Doujie Status',
       commandSection('运行', [
         field('Uptime', formatDuration(Date.now() - runtime.startedAt)),
         field('Listener', listener.state),

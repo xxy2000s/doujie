@@ -54,6 +54,17 @@ import {
 import { AgentSessionIntentController, type AgentSessionIntentResult } from './agent-session-intent.js';
 import { HeadlessAgentRunner } from './headless-agent-runner.js';
 import { MESSAGE_RECEIVE_EVENT, MESSAGE_UPDATED_EVENTS } from './listener.js';
+import {
+  resolveQuotedMessageFeature,
+  type RuntimeConfigSnapshot,
+  type RuntimeConfigSource,
+} from './runtime-config.js';
+import {
+  formatQuotedMessagePrompt,
+  normalizeDirectParentId,
+  selectQuotedMessageId,
+  type QuotedMessageProvider,
+} from './quoted-message.js';
 
 type AIPipelineLike = {
   process(text: string): Promise<AIResult>;
@@ -118,7 +129,7 @@ const defaultCodexChatRunner: CodexChatRunnerLike = {
 };
 
 const ADMIN_COMMANDS = new Set([
-  'new', 'detail', 'retry', 'redo', 'retag', 'merge-tag',
+  'new', 'detail', 'reload', 'retry', 'redo', 'retag', 'merge-tag',
   'errors', 'sessions', 'agent-sessions', 'backup', 'export', 'cleanup',
 ]);
 
@@ -156,6 +167,8 @@ export class Router {
   private activeCodexTurns = new Map<string, ActiveCodexTurn>();
   private agentSessionIntentController: AgentSessionIntentControllerLike | null;
   private groupContextProvider: GroupContextProvider | null;
+  private runtimeConfigSource: RuntimeConfigSource | null;
+  private quotedMessageProvider: QuotedMessageProvider | null;
 
   constructor(
     commands: Map<string, CommandHandler>,
@@ -179,7 +192,9 @@ export class Router {
     reactionClient: ReactionClient | null = null,
     botMentionConfig: BotMentionConfig = { ids: [], names: [] },
     agentSessionIntentController: AgentSessionIntentControllerLike | null = new AgentSessionIntentController(new HeadlessAgentRunner()),
-    groupContextProvider: GroupContextProvider | null = null
+    groupContextProvider: GroupContextProvider | null = null,
+    runtimeConfigSource: RuntimeConfigSource | null = null,
+    quotedMessageProvider: QuotedMessageProvider | null = null
   ) {
     this.commands = commands;
     this.aiPipeline = aiPipeline;
@@ -198,9 +213,12 @@ export class Router {
     this.botMentionConfig = botMentionConfig;
     this.agentSessionIntentController = agentSessionIntentController;
     this.groupContextProvider = groupContextProvider;
+    this.runtimeConfigSource = runtimeConfigSource;
+    this.quotedMessageProvider = quotedMessageProvider;
   }
 
   async handleEvent(event: FeishuEvent): Promise<void> {
+    const runtimeSnapshot = this.runtimeConfigSource?.getSnapshot() ?? null;
     const message = this.extractMessage(event);
     if (!message) return;
 
@@ -213,10 +231,25 @@ export class Router {
 
     const eventType = event.header?.event_type ?? '';
     const isEditedMessage = this.isMessageUpdatedEvent(eventType);
-    const contentVersionKey = this.getMessageContentVersionKey(messageToSave);
+    const quoteRelationshipAffectsVersion = runtimeSnapshot
+      ? resolveQuotedMessageFeature(runtimeSnapshot, messageToSave.chatId).enabled
+      : false;
+    const contentVersionKey = this.getMessageContentVersionKey(
+      messageToSave,
+      quoteRelationshipAffectsVersion
+    );
     if (isEditedMessage) {
       const versionKey = this.getMessageEventVersionKey(event, messageToSave);
       const existingContent = this.store.getMessageContent(messageId);
+      const previousMessage = existingContent === null ? null : this.loadStoredMessageForComparison(messageId);
+      const existingJob = existingContent === null ? null : this.store.getProcessingJob(messageId);
+      const isRelationshipOnlyChange = Boolean(
+        previousMessage &&
+        !previousMessage.parentId &&
+        messageToSave.parentId &&
+        this.getMessageContentVersionKey(previousMessage, false) ===
+          this.getMessageContentVersionKey(messageToSave, false)
+      );
       if (existingContent !== null) {
         const isNewEventVersion = this.store.recordMessageEventVersion(messageId, eventType, versionKey);
         if (!isNewEventVersion) {
@@ -228,7 +261,19 @@ export class Router {
           'message.content_v1',
           contentVersionKey
         );
-        if (!isNewContentVersion || (existingContent === messageToSave.text && this.store.getProcessingJob(messageId))) {
+        if (!isNewContentVersion) {
+          if (isRelationshipOnlyChange) {
+            this.store.saveEditedMessage({
+              id: messageId,
+              chatId: messageToSave.chatId,
+              senderId: messageToSave.senderId,
+              content: messageToSave.text,
+              messageType: messageToSave.messageType,
+              rawEvent: privacyDecision.rawEvent,
+            });
+            console.log('[router] Reply relationship enrichment stored without reprocessing:', messageId);
+            return;
+          }
           console.log('[router] Unchanged message edit skipped:', messageId, contentVersionKey);
           return;
         }
@@ -244,6 +289,10 @@ export class Router {
       if (existingContent === null) {
         this.store.recordMessageEventVersion(messageId, eventType, versionKey);
         this.store.recordMessageEventVersion(messageId, 'message.content_v1', contentVersionKey);
+      }
+      if (isRelationshipOnlyChange && existingJob) {
+        console.log('[router] Reply relationship enrichment stored without reprocessing:', messageId);
+        return;
       }
     } else {
       // Dedup check: try to save, skip if duplicate
@@ -280,10 +329,13 @@ export class Router {
       return;
     }
     await this.downloadAndStoreAttachments(messageToSave);
-    await this.processMessage(messageToSave);
+    await this.processMessage(messageToSave, 'default', runtimeSnapshot);
   }
 
-  async retryMessage(messageId: string): Promise<boolean> {
+  async retryMessage(
+    messageId: string,
+    runtimeSnapshot: RuntimeConfigSnapshot | null = this.runtimeConfigSource?.getSnapshot() ?? null
+  ): Promise<boolean> {
     const prepared = this.store.prepareRetry(messageId);
     if (!prepared) {
       return false;
@@ -310,15 +362,19 @@ export class Router {
     }
 
     this.inFlight.add(messageId);
-    await this.processMessage(message, 'retry');
+    await this.processMessage(message, 'retry', runtimeSnapshot);
     return true;
   }
 
-  private async processMessage(message: MessageContent, mode: ProcessingMode = 'default'): Promise<void> {
+  private async processMessage(
+    message: MessageContent,
+    mode: ProcessingMode = 'default',
+    runtimeSnapshot: RuntimeConfigSnapshot | null = null
+  ): Promise<void> {
     const messageId = message.messageId;
     try {
       if (this.isCommand(message.text)) {
-        await this.handleCommand(message);
+        await this.handleCommand(message, runtimeSnapshot);
       } else if (await this.handleGroupContextRequest(message)) {
         return;
       } else if (!canRunAgent(message, this.privacy)) {
@@ -328,7 +384,7 @@ export class Router {
       } else if (await this.handleAgentSessionIntent(message)) {
         return;
       } else {
-        await this.handleDefault(message, mode);
+        await this.handleDefault(message, mode, runtimeSnapshot);
       }
     } catch (err) {
       console.error('[router] Error processing message:', this.redactLog((err as Error).message));
@@ -394,26 +450,30 @@ export class Router {
 
   private getMessageEventVersionKey(event: FeishuEvent, message: MessageContent): string {
     const updateTime = extractFirstString(event, ['update_time', 'updateTime', 'updated_at', 'updatedAt']);
-    if (updateTime) return `update:${updateTime}`;
     const hash = crypto
       .createHash('sha256')
       .update(JSON.stringify({
         text: message.text,
         rawContent: message.rawContent,
         mentions: message.mentions,
+        parentId: message.parentId,
+        rootId: message.rootId,
       }))
       .digest('hex')
       .slice(0, 24);
-    return `hash:${hash}`;
+    return updateTime ? `update:${updateTime}:hash:${hash}` : `hash:${hash}`;
   }
 
-  private getMessageContentVersionKey(message: MessageContent): string {
+  private getMessageContentVersionKey(message: MessageContent, includeQuoteRelationship = true): string {
     const hash = crypto
       .createHash('sha256')
       .update(JSON.stringify({
         messageType: message.messageType,
         text: message.text,
         addressedToBot: this.hasBotMention(message),
+        ...(includeQuoteRelationship ? {
+          quoteRelationshipId: selectQuotedMessageId(message.parentId, message.rootId),
+        } : {}),
       }))
       .digest('hex')
       .slice(0, 24);
@@ -440,6 +500,7 @@ export class Router {
     }
 
     const mentions = this.extractMentions(msg, rawContent);
+    const parentId = normalizeDirectParentId(msg.parent_id, msg.reply_to);
     const message: MessageContent = {
       messageId: msg.message_id,
       chatId: msg.chat_id,
@@ -449,6 +510,8 @@ export class Router {
       text,
       rawContent,
       mentions,
+      ...(parentId ? { parentId } : {}),
+      ...(typeof msg.root_id === 'string' && msg.root_id.trim() ? { rootId: msg.root_id.trim() } : {}),
     };
     return {
       ...message,
@@ -534,7 +597,10 @@ export class Router {
       .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
   }
 
-  private async handleCommand(message: MessageContent): Promise<void> {
+  private async handleCommand(
+    message: MessageContent,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<void> {
     this.store.markProcessing(message.messageId, 'command');
     this.store.setProcessingMode(message.messageId, 'command');
     const parsed = this.parseCommand(message.text);
@@ -555,7 +621,7 @@ export class Router {
     }
 
     if (commandName === 'retry') {
-      await this.handleRetryCommand(message, args);
+      await this.handleRetryCommand(message, args, runtimeSnapshot);
       return;
     }
 
@@ -674,14 +740,18 @@ export class Router {
     };
   }
 
-  private async handleRetryCommand(message: MessageContent, args: string): Promise<void> {
+  private async handleRetryCommand(
+    message: MessageContent,
+    args: string,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<void> {
     const retryMessageId = args.trim();
     if (!retryMessageId) {
       await this.replyClient.replyText(message.messageId, 'Usage: /retry <message_id>');
       this.store.markReplied(message.messageId);
       return;
     }
-    const retried = await this.retryMessage(retryMessageId);
+    const retried = await this.retryMessage(retryMessageId, runtimeSnapshot);
     await this.replyClient.replyText(
       message.messageId,
       retried ? `Retry started for ${retryMessageId}.` : `Cannot retry ${retryMessageId}: job is not failed or does not exist.`
@@ -1100,10 +1170,14 @@ export class Router {
       .filter(Boolean);
   }
 
-  private async handleDefault(message: MessageContent, mode: ProcessingMode = 'default'): Promise<void> {
+  private async handleDefault(
+    message: MessageContent,
+    mode: ProcessingMode = 'default',
+    runtimeSnapshot: RuntimeConfigSnapshot | null = null
+  ): Promise<void> {
     if (this.defaultMessageMode === 'codex_chat') {
       console.log('[router] Processing with Codex chat:', message.messageId);
-      const prompt = await this.prepareDefaultCodexPrompt(message);
+      const prompt = await this.prepareDefaultCodexPrompt(message, runtimeSnapshot);
       if (prompt !== null) {
         await this.handleCodexCommand(message, prompt, false);
       }
@@ -1114,8 +1188,11 @@ export class Router {
     await this.runDigest(message, message.text, mode, true);
   }
 
-  private async prepareDefaultCodexPrompt(message: MessageContent): Promise<string | null> {
-    let prompt = message.text;
+  private async prepareDefaultCodexPrompt(
+    message: MessageContent,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<string | null> {
+    let prompt = await this.addQuotedMessageContext(message, runtimeSnapshot);
     const attachmentText = this.formatExtractedAttachmentText(message.messageId);
     if (attachmentText) {
       prompt = `${prompt}\n\n--- 以下为附件内容 ---\n\n${attachmentText}`;
@@ -1140,6 +1217,44 @@ export class Router {
     }
 
     return prompt;
+  }
+
+  private async addQuotedMessageContext(
+    message: MessageContent,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<string> {
+    if (!runtimeSnapshot || !this.quotedMessageProvider) return message.text;
+    const feature = resolveQuotedMessageFeature(runtimeSnapshot, message.chatId);
+    if (!feature.enabled) return message.text;
+    let relationshipId = selectQuotedMessageId(message.parentId, message.rootId);
+    if (!message.parentId && this.quotedMessageProvider.resolveRelationship) {
+      try {
+        const relationship = await this.quotedMessageProvider.resolveRelationship(message.messageId);
+        if (relationship?.parentId) message.parentId = relationship.parentId;
+        if (relationship?.rootId) message.rootId = relationship.rootId;
+        relationshipId = selectQuotedMessageId(message.parentId, message.rootId);
+        if (relationshipId && this.persistResolvedRelationship(message)) {
+          this.store.recordMessageEventVersion(
+            message.messageId,
+            'message.content_v1',
+            this.getMessageContentVersionKey(message, true)
+          );
+        }
+      } catch {
+        console.warn('[router] Quoted-message relationship lookup failed; using current message only.');
+        return message.text;
+      }
+    }
+    if (!relationshipId) return message.text;
+
+    try {
+      const quoted = await this.quotedMessageProvider.fetch(relationshipId);
+      if (!quoted) return message.text;
+      return formatQuotedMessagePrompt(message.text, quoted.text, feature.maxChars);
+    } catch {
+      console.warn('[router] Quoted-message lookup failed; using current message only.');
+      return message.text;
+    }
   }
 
   private async runDigest(
@@ -1284,6 +1399,31 @@ export class Router {
       ...message,
       text: this.store.getMessageContent(messageId) ?? message.text,
     };
+  }
+
+  private loadStoredMessageForComparison(messageId: string): MessageContent | null {
+    const rawEvent = this.store.getMessageRawEvent(messageId);
+    if (!rawEvent) return null;
+    try {
+      return this.extractMessage(JSON.parse(rawEvent) as FeishuEvent);
+    } catch {
+      return null;
+    }
+  }
+
+  private persistResolvedRelationship(message: MessageContent): boolean {
+    const rawEvent = this.store.getMessageRawEvent(message.messageId);
+    if (!rawEvent) return false;
+    try {
+      const event = JSON.parse(rawEvent) as FeishuEvent;
+      const storedMessage = event.event?.message;
+      if (!storedMessage) return false;
+      if (message.parentId) storedMessage.parent_id = message.parentId;
+      if (message.rootId) storedMessage.root_id = message.rootId;
+      return this.store.updateMessageRawEvent(message.messageId, JSON.stringify(event));
+    } catch {
+      return false;
+    }
   }
 }
 

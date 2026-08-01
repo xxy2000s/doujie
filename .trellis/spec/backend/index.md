@@ -19,6 +19,7 @@ These guidelines describe Doujie's current TypeScript daemon, SQLite, Feishu, an
 | [Error Handling](./error-handling.md) | Error types and boundary handling | Complete |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards and verification | Complete |
 | [Logging Guidelines](./logging-guidelines.md) | Console format, levels, and privacy | Complete |
+| [Runtime Config and Quoted Messages](./runtime-config-and-quoted-messages.md) | Immutable feature reloads and safe one-layer Feishu quote context | Complete |
 
 ---
 
