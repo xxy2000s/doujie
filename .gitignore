@@ -18,6 +18,8 @@ tmp/
 *.tmp
 *.pid
 *.jsonl
+# Trellis task context manifests are source metadata, not Codex/runtime logs.
+!.trellis/tasks/**/*.jsonl
 *.pem
 *.key
 *.p12
@@ -31,3 +33,4 @@ sessions/
 backups/
 exports/
 attachments/
+brainstorm/

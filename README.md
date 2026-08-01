@@ -197,6 +197,35 @@ pnpm test
 pnpm build
 ```
 
+### Trellis Workflow
+
+This repo uses Trellis as a development workflow layer for Codex and Claude Code. It adds `.trellis/` specs/tasks/workspace plus platform helpers under `.codex/`, `.claude/`, and `.agents/skills/`. Doujie's runtime state remains under `~/.doujie`; do not put secrets, credentials, tickets, runtime logs, or local config into Trellis files.
+
+The Trellis files fall into two groups:
+
+- **Upstream-managed, reusable framework files:** `.trellis/scripts/`, `.trellis/agents/`, `.trellis/workflow.md`, `.trellis/spec/guides/`, `.agents/skills/trellis-*`, `.claude/`, `.codex/`, `.trellis/.version`, and `.trellis/.template-hashes.json`. Refresh these with `trellis update`; avoid placing Doujie-specific rules in them.
+- **Doujie-specific files:** `.trellis/config.yaml`, `.trellis/spec/backend/`, `.trellis/spec/frontend/`, `.trellis/tasks/`, `.trellis/workspace/`, and the Trellis integration notes in `AGENTS.md`. These capture this repository's settings, executable conventions, task history, and developer context. The root `.gitignore` and `.gitattributes` are repository integration files.
+
+Useful commands:
+
+```bash
+trellis platforms --json
+trellis upgrade --dry-run
+trellis upgrade
+trellis update --dry-run
+trellis update
+trellis update --migrate
+```
+
+Trellis tasks are managed with the project-local script:
+
+```bash
+python3 ./.trellis/scripts/task.py list
+python3 ./.trellis/scripts/task.py create "<title>" --slug <slug>
+python3 ./.trellis/scripts/task.py start <task>
+python3 ./.trellis/scripts/task.py finish
+```
+
 Run in foreground for local debugging:
 
 ```bash

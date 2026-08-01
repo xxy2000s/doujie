@@ -44,6 +44,16 @@ Project agents = separate workers that Doujie dispatches, resumes, or audits exp
 - Use `apply_patch` for manual edits.
 - Use `rg` for code search.
 
+## Trellis Development Workflow
+
+This repository is initialized with Trellis for development workflow support only. Trellis does not change Doujie's runtime role, Feishu routing, config precedence, or agent control-plane boundaries.
+
+- Keep this `AGENTS.md` as the primary source for Doujie runtime facts and safety rules.
+- Use `.trellis/workflow.md` and `.trellis/spec/` to structure non-trivial development tasks and preserve project conventions.
+- Trellis platform files live in `.codex/`, `.claude/`, and `.agents/skills/`; they are development-time agent helpers, not Doujie project Agent session records.
+- Do not store secrets, Feishu credentials, OpenAI keys, runtime logs, event tickets, or real local config in `.trellis/tasks/`, `.trellis/workspace/`, or Trellis specs.
+- Before updating Trellis-managed files, run `trellis update --dry-run`; use `trellis update --migrate` only when Trellis reports a required migration.
+
 ## Configuration Precedence
 
 `src/config.ts` intentionally prefers:
