@@ -2,7 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import yaml from 'js-yaml';
-import type { AppConfig, FeatureOverrides, FeishuIdentity, PrivacyPattern, QuotedMessageFeatureConfig } from './types.js';
+import type {
+  AppConfig,
+  FeatureOverrides,
+  FeishuIdentity,
+  OutputTransport,
+  PrivacyPattern,
+  QuotedMessageFeatureConfig,
+} from './types.js';
 
 export const CONFIG_DIR = path.join(os.homedir(), '.doujie');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.yaml');
@@ -74,6 +81,12 @@ export function buildConfig(
     validateFeishuIdentity(getNestedValue(yamlConfig, 'feishu', 'as'), 'feishu.as') || 'bot';
   return {
     features: validateGlobalFeatures(getNestedValue(yamlConfig, 'features')),
+    output: {
+      transport:
+        validateOutputTransport(env.DOUJIE_OUTPUT_TRANSPORT, 'DOUJIE_OUTPUT_TRANSPORT') ||
+        validateOutputTransport(getNestedValue(yamlConfig, 'output', 'transport'), 'output.transport') ||
+        'card',
+    },
     codex: {
       model:
         validateOptionalString(env.CODEX_MODEL, 'CODEX_MODEL') ||
@@ -280,6 +293,14 @@ function validateFeishuIdentity(value: unknown, label: string): FeishuIdentity |
   if (value === undefined || value === null) return undefined;
   if (value !== 'bot' && value !== 'user') {
     throw new ConfigError(`${label} must be either "bot" or "user"`);
+  }
+  return value;
+}
+
+function validateOutputTransport(value: unknown, label: string): OutputTransport | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (value !== 'card' && value !== 'post') {
+    throw new ConfigError(`${label} must be card or post`);
   }
   return value;
 }

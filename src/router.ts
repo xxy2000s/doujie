@@ -6,6 +6,7 @@ import type {
   AIResult,
   ProcessingMode,
   PrivacyConfig,
+  OutputTransport,
 } from './types.js';
 import crypto from 'node:crypto';
 import type { Store } from './store.js';
@@ -40,6 +41,7 @@ import {
   clearCodexSession,
   isCodexChatInterruptedError,
   runCodexChat,
+  type CodexChunkMeta,
   type CodexChatOptions,
   type CodexChatResult,
 } from './ai/codex-chat.js';
@@ -78,7 +80,7 @@ export type CodexChatRunnerLike = {
   run(
     prompt: string,
     options: CodexChatOptions,
-    onChunk: (text: string) => Promise<void>
+    onChunk: (text: string, meta?: CodexChunkMeta) => Promise<void>
   ): Promise<CodexChatResult>;
 };
 
@@ -130,22 +132,28 @@ const defaultCodexChatRunner: CodexChatRunnerLike = {
 
 const ADMIN_COMMANDS = new Set([
   'new', 'detail', 'reload', 'retry', 'redo', 'retag', 'merge-tag',
-  'errors', 'sessions', 'agent-sessions', 'backup', 'export', 'cleanup',
+  'errors', 'sessions', 'agent-sessions', 'backup', 'export', 'cleanup', 'output',
 ]);
+
+const STATUS_CARD_UPDATE_INTERVAL_MS = 1000;
+const STATUS_CARD_RUNNING_OUTPUT_CHARS = 3500;
+const STATUS_CARD_FINAL_OUTPUT_CHARS = 6000;
 
 type CodexStatusCardHandle = {
   messageId: string;
   startedAt: number;
   stop(): void;
-  markOutputStarted(): void;
-  finish(sessionId: string | null, hadOutput: boolean): Promise<void>;
-  interrupt(reason: string): Promise<void>;
-  fail(error: Error): Promise<void>;
+  markOutputStarted(): Promise<void>;
+  appendOutput(chunk: string, continuation?: boolean): Promise<void>;
+  finish(sessionId: string | null): Promise<string | null>;
+  interrupt(reason: string): Promise<string | null>;
+  fail(error: Error): Promise<string | null>;
 };
 
 type ActiveCodexTurn = {
   messageId: string;
   controller: AbortController;
+  inputTimestamp: number;
 };
 
 export class Router {
@@ -165,6 +173,7 @@ export class Router {
   private defaultMessageMode: DefaultMessageMode;
   private botMentionConfig: BotMentionConfig;
   private activeCodexTurns = new Map<string, ActiveCodexTurn>();
+  private latestCodexInputTimestamps = new Map<string, number>();
   private agentSessionIntentController: AgentSessionIntentControllerLike | null;
   private groupContextProvider: GroupContextProvider | null;
   private runtimeConfigSource: RuntimeConfigSource | null;
@@ -334,7 +343,8 @@ export class Router {
 
   async retryMessage(
     messageId: string,
-    runtimeSnapshot: RuntimeConfigSnapshot | null = this.runtimeConfigSource?.getSnapshot() ?? null
+    runtimeSnapshot: RuntimeConfigSnapshot | null = this.runtimeConfigSource?.getSnapshot() ?? null,
+    requestedAt = Date.now()
   ): Promise<boolean> {
     const prepared = this.store.prepareRetry(messageId);
     if (!prepared) {
@@ -362,7 +372,7 @@ export class Router {
     }
 
     this.inFlight.add(messageId);
-    await this.processMessage(message, 'retry', runtimeSnapshot);
+    await this.processMessage({ ...message, inputTimestamp: requestedAt }, 'retry', runtimeSnapshot);
     return true;
   }
 
@@ -375,7 +385,7 @@ export class Router {
     try {
       if (this.isCommand(message.text)) {
         await this.handleCommand(message, runtimeSnapshot);
-      } else if (await this.handleGroupContextRequest(message)) {
+      } else if (await this.handleGroupContextRequest(message, runtimeSnapshot)) {
         return;
       } else if (!canRunAgent(message, this.privacy)) {
         await this.replyClient.replyText(message.messageId, '你可以使用本群允许的上下文总结功能，但没有权限调度 Codex Agent。');
@@ -501,6 +511,10 @@ export class Router {
 
     const mentions = this.extractMentions(msg, rawContent);
     const parentId = normalizeDirectParentId(msg.parent_id, msg.reply_to);
+    const isEditedMessage = this.isMessageUpdatedEvent(event.header?.event_type ?? '');
+    const parsedInputTimestamp = normalizeFeishuTimestamp(
+      isEditedMessage ? msg.update_time : event.header?.create_time
+    );
     const message: MessageContent = {
       messageId: msg.message_id,
       chatId: msg.chat_id,
@@ -512,6 +526,7 @@ export class Router {
       mentions,
       ...(parentId ? { parentId } : {}),
       ...(typeof msg.root_id === 'string' && msg.root_id.trim() ? { rootId: msg.root_id.trim() } : {}),
+      ...(parsedInputTimestamp !== null ? { inputTimestamp: parsedInputTimestamp } : {}),
     };
     return {
       ...message,
@@ -625,6 +640,11 @@ export class Router {
       return;
     }
 
+    if (commandName === 'output') {
+      await this.handleOutputCommand(message, args);
+      return;
+    }
+
     if (commandName === 'save') {
       await this.handleSaveCommand(message, args);
       return;
@@ -661,18 +681,18 @@ export class Router {
     }
 
     if (commandName === 'new') {
-      await this.handleNewCommand(message, args);
+      await this.handleNewCommand(message, args, runtimeSnapshot);
       return;
     }
 
     if (commandName === 'detail') {
-      await this.handleCodexCommand(message, args, true);
+      await this.handleCodexCommand(message, args, true, undefined, undefined, runtimeSnapshot);
       return;
     }
 
     if (commandName === 'codex') {
       const detailArgs = this.extractDetailPrompt(args);
-      await this.handleCodexCommand(message, detailArgs.prompt, detailArgs.detailed);
+      await this.handleCodexCommand(message, detailArgs.prompt, detailArgs.detailed, undefined, undefined, runtimeSnapshot);
       return;
     }
 
@@ -710,7 +730,10 @@ export class Router {
     return true;
   }
 
-  private async handleGroupContextRequest(message: MessageContent): Promise<boolean> {
+  private async handleGroupContextRequest(
+    message: MessageContent,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<boolean> {
     if (message.chatType !== 'group' || !this.groupContextProvider) return false;
     const request = parseGroupContextRequest(message.text);
     if (!request) return false;
@@ -727,7 +750,14 @@ export class Router {
       return true;
     }
     const prompt = formatGroupContextPrompt(message.text, filtered, rule.contextMaxChars);
-    await this.handleCodexCommand(message, prompt, false, 'read-only', `context:${message.chatId}:${message.messageId}`);
+    await this.handleCodexCommand(
+      message,
+      prompt,
+      false,
+      'read-only',
+      `context:${message.chatId}:${message.messageId}`,
+      runtimeSnapshot
+    );
     return true;
   }
 
@@ -751,7 +781,7 @@ export class Router {
       this.store.markReplied(message.messageId);
       return;
     }
-    const retried = await this.retryMessage(retryMessageId, runtimeSnapshot);
+    const retried = await this.retryMessage(retryMessageId, runtimeSnapshot, message.inputTimestamp ?? Date.now());
     await this.replyClient.replyText(
       message.messageId,
       retried ? `Retry started for ${retryMessageId}.` : `Cannot retry ${retryMessageId}: job is not failed or does not exist.`
@@ -930,8 +960,47 @@ export class Router {
     return { detailed: false, prompt: trimmed };
   }
 
-  private async handleNewCommand(message: MessageContent, args: string): Promise<void> {
+  private async handleOutputCommand(message: MessageContent, args: string): Promise<void> {
+    const requested = args.trim().toLowerCase();
+    const current = this.runtimeConfigSource?.getSnapshot().config.output.transport ?? 'card';
+    if (!requested || requested === 'status') {
+      await this.replyClient.replyText(
+        message.messageId,
+        `当前输出模式：**${formatOutputTransport(current)}**。\n\n使用 \`/output post\` 或 \`/output card\` 切换；配置 \`output.transport\` 决定重启后的默认值。`
+      );
+      this.store.markReplied(message.messageId);
+      return;
+    }
+    if (requested !== 'card' && requested !== 'post') {
+      await this.replyClient.replyText(message.messageId, 'Usage: /output <status|post|card>');
+      this.store.markReplied(message.messageId);
+      return;
+    }
+    if (!this.runtimeConfigSource?.setOutputTransport) {
+      await this.replyClient.replyText(message.messageId, '运行时输出模式切换未配置。');
+      this.store.markReplied(message.messageId);
+      return;
+    }
+    const snapshot = this.runtimeConfigSource.setOutputTransport(requested);
+    await this.replyClient.replyText(
+      message.messageId,
+      `输出模式已切换为 **${formatOutputTransport(snapshot.config.output.transport)}**，从下一条任务开始生效。`
+    );
+    this.store.markReplied(message.messageId);
+  }
+
+  private async handleNewCommand(
+    message: MessageContent,
+    args: string,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<void> {
     const sessionKey = this.getCodexSessionKey(message);
+    if (this.isStaleCodexTurn(sessionKey, message.inputTimestamp)) {
+      console.warn('[router] Stale /new generation skipped:', message.messageId);
+      this.store.markReplied(message.messageId);
+      return;
+    }
+    this.recordCodexInputTimestamp(sessionKey, message.inputTimestamp);
     this.interruptActiveCodexTurn(sessionKey);
     clearCodexSession(sessionKey, this.codexChatOptions.stateFile);
     deactivateControlSession(sessionKey, this.codexChatOptions.controlSessionDir);
@@ -943,7 +1012,7 @@ export class Router {
     }
 
     await this.replyClient.replyText(message.messageId, '已切换到新的 Codex session。');
-    await this.handleCodexCommand(message, prompt, false);
+    await this.handleCodexCommand(message, prompt, false, undefined, undefined, runtimeSnapshot);
   }
 
   private async handleCodexCommand(
@@ -951,7 +1020,8 @@ export class Router {
     args: string,
     detailed: boolean,
     sandboxOverride?: CodexChatOptions['sandbox'],
-    sessionKeyOverride?: string
+    sessionKeyOverride?: string,
+    runtimeSnapshot: RuntimeConfigSnapshot | null = this.runtimeConfigSource?.getSnapshot() ?? null
   ): Promise<void> {
     const prompt = args.trim();
     if (!prompt) {
@@ -962,15 +1032,30 @@ export class Router {
 
     this.store.setProcessingMode(message.messageId, 'codex_chat');
     this.store.markProcessing(message.messageId, 'codex_chat');
-    await this.addStatusReaction(message.messageId, 'THINKING');
     const sessionKey = sessionKeyOverride ?? this.getCodexSessionKey(message);
-    const turn = this.startCodexTurn(sessionKey, message.messageId);
-    if (detailed) {
-      await this.replyClient.replyText(message.messageId, 'Codex 已开始处理。');
+    const turn = this.startCodexTurn(sessionKey, message.messageId, message.inputTimestamp);
+    if (!turn) {
+      console.warn('[router] Stale message generation skipped:', message.messageId);
+      this.store.markReplied(message.messageId);
+      return;
     }
-
-    let chunksSent = 0;
-    const statusCard = detailed ? null : await this.createCodexStatusCard(message.messageId);
+    await this.addStatusReaction(message.messageId, 'THINKING');
+    const outputTransport = runtimeSnapshot?.config.output.transport ?? 'card';
+    let fallbackOutput = '';
+    let postChunksSent = 0;
+    let pendingPostOutput = '';
+    const flushPostOutput = async (): Promise<void> => {
+      if (!pendingPostOutput) return;
+      const output = pendingPostOutput;
+      await this.replyClient.replyText(message.messageId, output);
+      pendingPostOutput = '';
+      postChunksSent += 1;
+    };
+    const statusCard = await this.createCodexStatusCard(
+      message.messageId,
+      detailed,
+      outputTransport === 'card'
+    );
     try {
       const result = await this.codexChatRunner.run(
         prompt,
@@ -981,51 +1066,102 @@ export class Router {
           outputMode: detailed ? 'detail' : 'answer',
           abortSignal: turn.controller.signal,
         },
-        async (chunk: string): Promise<void> => {
+        async (chunk: string, meta?: CodexChunkMeta): Promise<void> => {
           if (turn.controller.signal.aborted) {
             throw new CodexChatInterruptedError();
           }
-          chunksSent += 1;
-          if (statusCard) {
-            statusCard.markOutputStarted();
+          if (outputTransport === 'post') {
+            await statusCard?.markOutputStarted();
+            if (meta?.continuation) {
+              pendingPostOutput += chunk;
+            } else {
+              await flushPostOutput();
+              pendingPostOutput = chunk;
+            }
+          } else if (statusCard) {
+            await statusCard.appendOutput(chunk, meta?.continuation);
+          } else {
+            fallbackOutput = appendOutputChunk(fallbackOutput, chunk, meta?.continuation);
           }
-          await this.replyClient.replyText(message.messageId, chunk);
         }
       );
 
       this.store.markProcessing(message.messageId, 'reply');
-      if (detailed) {
-        await this.replyClient.replyText(
-          message.messageId,
-          result.sessionId ? `Codex 任务结束。session: ${result.sessionId}` : 'Codex 任务结束。'
-        );
-      } else if (statusCard) {
-        if (chunksSent === 0) {
+      if (outputTransport === 'post') {
+        await flushPostOutput();
+        if (postChunksSent === 0) {
           await this.replyClient.replyText(message.messageId, 'Codex 没有返回可显示内容。');
         }
-        await statusCard.finish(result.sessionId, chunksSent > 0);
-      } else if (chunksSent === 0) {
-        await this.replyClient.replyText(message.messageId, 'Codex 没有返回可显示内容。');
+        await statusCard?.finish(result.sessionId);
+      } else if (statusCard) {
+        const overflow = await statusCard.finish(result.sessionId);
+        if (overflow) await this.replyClient.replyText(message.messageId, overflow);
+      } else {
+        await this.replyClient.replyText(message.messageId, fallbackOutput || 'Codex 没有返回可显示内容。');
       }
       await this.addStatusReaction(message.messageId, 'DONE');
     } catch (err) {
       if (isCodexChatInterruptedError(err) || turn.controller.signal.aborted) {
         statusCard?.stop();
-        await statusCard?.interrupt('被同一会话中的新消息打断。').catch((cardErr: Error) => {
-          console.error('[router] Failed to update status card after interrupt:', cardErr.message);
-        });
+        if (outputTransport === 'post') {
+          await flushPostOutput().catch((replyErr: Error) => {
+            console.error('[router] Failed to flush Post output after interrupt:', replyErr.message);
+          });
+        }
+        let interruptCardUpdated = false;
+        if (statusCard) {
+          try {
+            const overflow = await statusCard.interrupt('被同一会话中的新消息打断。');
+            if (overflow) await this.replyClient.replyText(message.messageId, overflow);
+            interruptCardUpdated = true;
+          } catch (cardErr) {
+            console.error('[router] Failed to update status card after interrupt:', (cardErr as Error).message);
+          }
+        } else if (outputTransport === 'card' && fallbackOutput) {
+          await this.replyClient.replyText(
+            message.messageId,
+            `${fallbackOutput}\n\n---\n\n已被新消息打断，正在处理最新消息。`
+          ).then(() => {
+            interruptCardUpdated = true;
+          }).catch((replyErr: Error) => {
+            console.error('[router] Failed to send fallback output after interrupt:', replyErr.message);
+          });
+        }
         this.store.markProcessing(message.messageId, 'interrupted');
-        await this.replyClient.replyText(message.messageId, '已被新消息打断，正在处理最新消息。').catch((replyErr: Error) => {
-          console.error('[router] Failed to send interrupt notice:', replyErr.message);
-        });
+        await this.addStatusReaction(message.messageId, 'ERROR');
+        if (!interruptCardUpdated) {
+          await this.replyClient.replyText(message.messageId, '已被新消息打断，正在处理最新消息。').catch((replyErr: Error) => {
+            console.error('[router] Failed to send interrupt notice:', replyErr.message);
+          });
+        }
         this.store.markReplied(message.messageId);
         return;
       }
       statusCard?.stop();
-      await statusCard?.fail(err as Error).catch((cardErr: Error) => {
-        console.error('[router] Failed to update status card after error:', cardErr.message);
-      });
+      if (outputTransport === 'post') {
+        await flushPostOutput().catch((replyErr: Error) => {
+          console.error('[router] Failed to flush Post output after error:', replyErr.message);
+        });
+      } else if (!statusCard && fallbackOutput) {
+        await this.replyClient.replyText(message.messageId, fallbackOutput).catch((replyErr: Error) => {
+          console.error('[router] Failed to send fallback output after error:', replyErr.message);
+        });
+      }
+      let errorCardUpdated = false;
+      if (statusCard) {
+        try {
+          const overflow = await statusCard.fail(err as Error);
+          if (overflow) await this.replyClient.replyText(message.messageId, overflow);
+          errorCardUpdated = true;
+        } catch (cardErr) {
+          console.error('[router] Failed to update status card after error:', (cardErr as Error).message);
+        }
+      }
       await this.addStatusReaction(message.messageId, 'ERROR');
+      if (errorCardUpdated) {
+        this.store.markFailed(message.messageId, 'codex_chat', (err as Error).message);
+        return;
+      }
       throw err;
     } finally {
       this.finishCodexTurn(sessionKey, turn);
@@ -1033,11 +1169,32 @@ export class Router {
     this.store.markReplied(message.messageId);
   }
 
-  private startCodexTurn(sessionKey: string, messageId: string): ActiveCodexTurn {
+  private startCodexTurn(
+    sessionKey: string,
+    messageId: string,
+    inputTimestamp?: number
+  ): ActiveCodexTurn | null {
+    if (this.isStaleCodexTurn(sessionKey, inputTimestamp)) {
+      return null;
+    }
     this.interruptActiveCodexTurn(sessionKey);
-    const turn = { messageId, controller: new AbortController() };
+    const turn = { messageId, controller: new AbortController(), inputTimestamp: inputTimestamp ?? Date.now() };
+    this.recordCodexInputTimestamp(sessionKey, turn.inputTimestamp);
     this.activeCodexTurns.set(sessionKey, turn);
     return turn;
+  }
+
+  private isStaleCodexTurn(sessionKey: string, inputTimestamp?: number): boolean {
+    const active = this.activeCodexTurns.get(sessionKey);
+    if (active && inputTimestamp === undefined) return true;
+    const latest = this.latestCodexInputTimestamps.get(sessionKey);
+    return inputTimestamp !== undefined && latest !== undefined && inputTimestamp < latest;
+  }
+
+  private recordCodexInputTimestamp(sessionKey: string, inputTimestamp?: number): void {
+    const timestamp = inputTimestamp ?? Date.now();
+    const latest = this.latestCodexInputTimestamps.get(sessionKey);
+    if (latest === undefined || timestamp > latest) this.latestCodexInputTimestamps.set(sessionKey, timestamp);
   }
 
   private interruptActiveCodexTurn(sessionKey: string): void {
@@ -1058,7 +1215,11 @@ export class Router {
     return `${message.chatId}:${message.senderId}`;
   }
 
-  private async createCodexStatusCard(messageId: string): Promise<CodexStatusCardHandle | null> {
+  private async createCodexStatusCard(
+    messageId: string,
+    detailed: boolean,
+    includeOutput: boolean
+  ): Promise<CodexStatusCardHandle | null> {
     if (!this.replyClient.replyStatusCard || !this.replyClient.updateStatusCard) {
       return null;
     }
@@ -1067,13 +1228,23 @@ export class Router {
     let dots = 1;
     let stage = '启动 Codex session';
     let stopped = false;
-    let updateInFlight = false;
+    let output = '';
+    let externalOutputStarted = false;
+    let lastPatchedOutput = '';
+    let lastPatchedStage = stage;
+    let lastPatchAt = 0;
+    let scheduledUpdate: NodeJS.Timeout | null = null;
+    let heartbeat: NodeJS.Timeout | null = null;
+    let updateQueue = Promise.resolve();
     const buildParams = (): StatusCardParams => ({
-      state: stage === '整理输出' ? 'working' : 'thinking',
+      state: output ? 'working' : 'thinking',
       stage,
       elapsedMs: Date.now() - startedAt,
       dots,
-      detail: '豆姐正在调度本地 Agent，正文会实时分段发送。',
+      detail: includeOutput
+        ? (detailed ? '详细模式：展示 Agent 事件与工具输出。' : '中间结果会在本卡片中持续更新。')
+        : '过程与结果会以 Markdown 消息持续发送。',
+      ...buildBoundedCardOutput(output, STATUS_CARD_RUNNING_OUTPUT_CHARS),
     });
 
     let statusMessageId: string | null = null;
@@ -1089,67 +1260,122 @@ export class Router {
     }
     const updateStatusCard = this.replyClient.updateStatusCard;
 
-    const update = async (): Promise<void> => {
-      if (stopped || updateInFlight || !updateStatusCard) return;
+    const patch = async (force = false): Promise<void> => {
+      if (stopped || !updateStatusCard || (!force && output === lastPatchedOutput && stage === lastPatchedStage)) return;
       dots = dots >= 3 ? 1 : dots + 1;
-      updateInFlight = true;
-      try {
-        await updateStatusCard(statusMessageId, buildParams());
-      } catch (err) {
-        console.error('[router] Failed to update status card:', (err as Error).message);
-      } finally {
-        updateInFlight = false;
-      }
+      const snapshot = output;
+      await retryStatusCardUpdate(() => updateStatusCard(statusMessageId, buildParams()));
+      lastPatchedOutput = snapshot;
+      lastPatchedStage = stage;
+      lastPatchAt = Date.now();
     };
-    const timer = setInterval(() => {
-      update().catch((err: Error) => {
-        console.error('[router] Failed to schedule status card update:', err.message);
+    const enqueuePatch = (force = false): Promise<void> => {
+      updateQueue = updateQueue.then(() => patch(force)).catch((err: Error) => {
+        console.error('[router] Failed to update status card:', err.message);
       });
-    }, 2000);
+      return updateQueue;
+    };
+    const schedulePatch = (): Promise<void> => {
+      const waitMs = Math.max(0, STATUS_CARD_UPDATE_INTERVAL_MS - (Date.now() - lastPatchAt));
+      if (waitMs === 0) return enqueuePatch();
+      if (!scheduledUpdate) {
+        scheduledUpdate = setTimeout(() => {
+          scheduledUpdate = null;
+          void enqueuePatch();
+        }, waitMs);
+      }
+      return Promise.resolve();
+    };
     const stop = (): void => {
       stopped = true;
-      clearInterval(timer);
+      if (scheduledUpdate) clearTimeout(scheduledUpdate);
+      if (heartbeat) clearInterval(heartbeat);
+      scheduledUpdate = null;
+      heartbeat = null;
     };
+    heartbeat = setInterval(() => {
+      void enqueuePatch(true);
+    }, 2000);
 
     return {
       messageId: statusMessageId,
       startedAt,
       stop,
-      markOutputStarted(): void {
-        stage = '整理输出';
+      async markOutputStarted(): Promise<void> {
+        if (stopped || stage === 'Agent 正在输出') return;
+        externalOutputStarted = true;
+        stage = 'Agent 正在输出';
+        await schedulePatch();
       },
-      async finish(sessionId: string | null, hadOutput: boolean): Promise<void> {
-        stop();
-        if (!updateStatusCard) return;
-        await updateStatusCard(statusMessageId, {
-          state: 'done',
-          title: '豆姐完成了',
-          stage: hadOutput ? '正文已发送完成' : '没有可显示输出',
-          elapsedMs: Date.now() - startedAt,
-          sessionId,
-        });
+      async appendOutput(chunk: string, continuation = false): Promise<void> {
+        if (stopped) return;
+        output = appendOutputChunk(output, chunk, continuation);
+        stage = 'Agent 正在输出';
+        await schedulePatch();
       },
-      async interrupt(reason: string): Promise<void> {
+      async finish(sessionId: string | null): Promise<string | null> {
+        if (scheduledUpdate) clearTimeout(scheduledUpdate);
+        scheduledUpdate = null;
+        await enqueuePatch();
         stop();
-        if (!updateStatusCard) return;
-        await updateStatusCard(statusMessageId, {
-          state: 'error',
-          title: '豆姐已中断',
-          stage: '被新消息打断',
-          elapsedMs: Date.now() - startedAt,
-          detail: reason,
-        });
+        if (!updateStatusCard) return includeOutput ? (output || 'Codex 没有返回可显示内容。') : null;
+        const bounded = buildBoundedCardOutput(output, STATUS_CARD_FINAL_OUTPUT_CHARS);
+        try {
+          await retryStatusCardUpdate(() => updateStatusCard(statusMessageId, {
+            state: 'done',
+            title: '豆姐完成了',
+            stage: includeOutput
+              ? (output ? (bounded.outputTruncated ? '完成，完整结果见后续消息' : '结果已完整写入') : '没有可显示输出')
+              : (externalOutputStarted ? '结果已通过 Markdown 发送' : '没有可显示输出'),
+            elapsedMs: Date.now() - startedAt,
+            sessionId,
+            ...bounded,
+          }));
+        } catch (err) {
+          console.error('[router] Failed to finalize status card:', (err as Error).message);
+          return includeOutput ? (output || 'Codex 没有返回可显示内容。') : null;
+        }
+        return bounded.outputTruncated ? output : null;
       },
-      async fail(error: Error): Promise<void> {
+      async interrupt(reason: string): Promise<string | null> {
         stop();
-        if (!updateStatusCard) return;
-        await updateStatusCard(statusMessageId, {
-          state: 'error',
-          title: '豆姐处理失败',
-          stage: 'Agent 执行失败',
-          elapsedMs: Date.now() - startedAt,
-          detail: error.message,
-        });
+        if (!updateStatusCard) return output || null;
+        await updateQueue;
+        const bounded = buildBoundedCardOutput(output, STATUS_CARD_FINAL_OUTPUT_CHARS);
+        try {
+          await retryStatusCardUpdate(() => updateStatusCard(statusMessageId, {
+            state: 'error',
+            title: '豆姐已中断',
+            stage: bounded.outputTruncated ? '被新消息打断，完整的已产生输出见后续消息' : '被新消息打断',
+            elapsedMs: Date.now() - startedAt,
+            detail: reason,
+            ...bounded,
+          }));
+        } catch (err) {
+          if (output) return `任务已被新消息打断。以下是中断前已产生的输出：\n\n${output}`;
+          throw err;
+        }
+        return bounded.outputTruncated ? output : null;
+      },
+      async fail(error: Error): Promise<string | null> {
+        stop();
+        if (!updateStatusCard) return output || null;
+        await updateQueue;
+        const bounded = buildBoundedCardOutput(output, STATUS_CARD_FINAL_OUTPUT_CHARS);
+        try {
+          await retryStatusCardUpdate(() => updateStatusCard(statusMessageId, {
+            state: 'error',
+            title: '豆姐处理失败',
+            stage: bounded.outputTruncated ? 'Agent 执行失败，完整的已产生输出见后续消息' : 'Agent 执行失败',
+            elapsedMs: Date.now() - startedAt,
+            detail: error.message,
+            ...bounded,
+          }));
+        } catch (err) {
+          if (output) return `Agent 执行失败：${error.message}\n\n以下是失败前已产生的输出：\n\n${output}`;
+          throw err;
+        }
+        return bounded.outputTruncated ? output : null;
       },
     };
   }
@@ -1179,7 +1405,7 @@ export class Router {
       console.log('[router] Processing with Codex chat:', message.messageId);
       const prompt = await this.prepareDefaultCodexPrompt(message, runtimeSnapshot);
       if (prompt !== null) {
-        await this.handleCodexCommand(message, prompt, false);
+        await this.handleCodexCommand(message, prompt, false, undefined, undefined, runtimeSnapshot);
       }
       return;
     }
@@ -1424,6 +1650,64 @@ export class Router {
     } catch {
       return false;
     }
+  }
+}
+
+function appendOutputChunk(current: string, chunk: string, continuation = false): string {
+  if (!chunk) return current;
+  if (continuation) return `${current}${chunk}`;
+  return current ? `${current}\n\n${chunk}` : chunk;
+}
+
+function normalizeFeishuTimestamp(value: string | undefined): number | null {
+  let timestamp = Number(value);
+  if (!Number.isFinite(timestamp)) return null;
+  if (timestamp >= 1e17) timestamp /= 1e6;
+  else if (timestamp >= 1e14) timestamp /= 1e3;
+  else if (timestamp >= 1e8 && timestamp < 1e11) timestamp *= 1e3;
+  return timestamp;
+}
+
+function formatOutputTransport(transport: OutputTransport): string {
+  return transport === 'post' ? 'Post Markdown 分段' : '动态状态卡';
+}
+
+function buildBoundedCardOutput(
+  output: string,
+  maxChars: number
+): Pick<StatusCardParams, 'output' | 'outputTruncated'> {
+  const characters = [...output];
+  if (characters.length <= maxChars) return output ? { output } : {};
+  const fenceRepairReserve = 12;
+  let start = characters.length - Math.max(1, maxChars - fenceRepairReserve);
+  const nearbyNewline = characters.slice(start, Math.min(characters.length, start + 200)).indexOf('\n');
+  if (nearbyNewline >= 0) start += nearbyNewline + 1;
+
+  const omittedPrefix = characters.slice(0, start).join('');
+  const retainedTail = characters.slice(start).join('');
+  const startsInsideFence = countMarkdownCodeFences(omittedPrefix) % 2 === 1;
+  const endsInsideFence = (countMarkdownCodeFences(retainedTail) + Number(startsInsideFence)) % 2 === 1;
+  const repairedTail = [
+    startsInsideFence ? '```text\n' : '',
+    retainedTail,
+    endsInsideFence ? '\n```' : '',
+  ].join('');
+  return {
+    output: repairedTail,
+    outputTruncated: true,
+  };
+}
+
+function countMarkdownCodeFences(content: string): number {
+  return [...content.matchAll(/(?:^|\n)[ \t]{0,3}`{3,}(?=[^`]|$)/g)].length;
+}
+
+async function retryStatusCardUpdate(update: () => Promise<void>): Promise<void> {
+  try {
+    await update();
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await update();
   }
 }
 

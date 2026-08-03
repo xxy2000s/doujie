@@ -83,6 +83,18 @@ test('buildStatusCard creates updateable interactive card content', () => {
   assert.match(card.elements[0]?.text?.content ?? '', /3s/);
 });
 
+test('buildStatusCard renders Markdown output in the same interactive card', () => {
+  const card = buildStatusCard({
+    state: 'working',
+    stage: 'Agent 正在输出',
+    output: '**完成**\n\n- step 1',
+  }) as { elements: Array<{ text?: { tag?: string; content?: string } }> };
+
+  assert.equal(card.elements.length, 2);
+  assert.equal(card.elements[1]?.text?.tag, 'lark_md');
+  assert.match(card.elements[1]?.text?.content ?? '', /\*\*完成\*\*/);
+});
+
 test('status card reply and patch args use interactive and Feishu patch API', () => {
   const params = { state: 'done' as const, stage: '完成', sessionId: 'session-1' };
 

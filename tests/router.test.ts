@@ -277,6 +277,7 @@ function createInterruptibleCodexChatRunner(): InterruptibleCodexChatRunner {
         fake.prompts.push(prompt);
         fake.options.push(options);
         if (prompt === 'first task') {
+          await onChunk('partial reply for first task');
           firstStarted.resolve();
           return new Promise<CodexChatResult>((_resolve, reject) => {
             const abort = (): void => {
@@ -430,19 +431,684 @@ test('Router streams Codex chunks while updating one status card when supported'
       senderAtEventRoot: true,
     }));
 
-    assert.deepEqual(reply.texts.map((item) => item.text), ['chunk one', 'chunk two']);
+    assert.deepEqual(reply.texts, []);
     assert.equal(reply.statusCards.length, 1);
     assert.equal(reply.statusCards[0]?.messageId, 'codex-card-1');
     assert.equal(reply.statusCards[0]?.params.state, 'thinking');
-    assert.equal(reply.statusUpdates.length, 1);
-    assert.equal(reply.statusUpdates[0]?.messageId, 'card-codex-card-1');
-    assert.equal(reply.statusUpdates[0]?.params.state, 'done');
-    assert.equal(reply.statusUpdates[0]?.params.stage, '正文已发送完成');
-    assert.equal('result' in reply.statusUpdates[0]!.params, false);
+    assert.ok(reply.statusUpdates.length >= 2);
+    assert.equal(reply.statusUpdates.every((item) => item.messageId === 'card-codex-card-1'), true);
+    const finalUpdate = reply.statusUpdates.at(-1);
+    assert.equal(finalUpdate?.params.state, 'done');
+    assert.equal(finalUpdate?.params.stage, '结果已完整写入');
+    assert.equal(finalUpdate?.params.output, 'chunk one\n\nchunk two');
     assert.deepEqual(reaction.reactions, [
       { messageId: 'codex-card-1', emojiType: 'THINKING' },
       { messageId: 'codex-card-1', emojiType: 'DONE' },
     ]);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router streams Codex chunks as Post Markdown when post transport is selected', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-codex-post-transport');
+  const store = new Store(dbPath, () => 1110);
+  const reply = createFakeReplyWithStatusCards();
+  const reaction = createFakeReaction();
+  const codex = createFakeCodexChatRunner(['## First\n\n- item', '**Second**']);
+  const config = buildConfig({ output: { transport: 'post' } }, {});
+  const manager = new RuntimeConfigManager(config, () => config);
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    config.privacy,
+    null,
+    null,
+    null,
+    codex.runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true },
+    'codex_chat',
+    reaction.client,
+    { ids: [], names: [] },
+    null,
+    null,
+    manager
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'post-transport-1', text: '/detail markdown' }));
+
+    assert.deepEqual(reply.texts.map((item) => item.text), ['## First\n\n- item', '**Second**']);
+    assert.equal(reply.statusCards.length, 1);
+    assert.match(reply.statusCards[0]?.params.detail ?? '', /Markdown 消息/);
+    assert.equal(reply.statusUpdates.at(-1)?.params.state, 'done');
+    assert.equal(reply.statusUpdates.at(-1)?.params.stage, '结果已通过 Markdown 发送');
+    assert.equal(reply.statusUpdates.at(-1)?.params.output, undefined);
+    assert.equal(codex.options[0]?.outputMode, 'detail');
+    assert.deepEqual(reaction.reactions, [
+      { messageId: 'post-transport-1', emojiType: 'THINKING' },
+      { messageId: 'post-transport-1', emojiType: 'DONE' },
+    ]);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router coalesces token-level continuation chunks in Post transport', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-codex-post-deltas');
+  const store = new Store(dbPath, () => 1110);
+  const reply = createFakeReplyWithStatusCards();
+  const config = buildConfig({ output: { transport: 'post' } }, {});
+  const manager = new RuntimeConfigManager(config, () => config);
+  const runner: CodexChatRunnerLike = {
+    async run(_prompt, _options, onChunk): Promise<CodexChatResult> {
+      await onChunk('Hel', { continuation: false });
+      await onChunk('lo', { continuation: true });
+      await onChunk(' world', { continuation: true });
+      await onChunk('Second block', { continuation: false });
+      return { sessionId: 'post-delta-session' };
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    config.privacy,
+    null,
+    null,
+    null,
+    runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true },
+    'codex_chat',
+    null,
+    { ids: [], names: [] },
+    null,
+    null,
+    manager
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'post-deltas-1', text: '/detail stream' }));
+    assert.deepEqual(reply.texts.map((item) => item.text), ['Hello world', 'Second block']);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router retains buffered Post output when its first delivery attempt fails', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-codex-post-send-retry');
+  const store = new Store(dbPath, () => 1110);
+  const reply = createFakeReply();
+  let attempts = 0;
+  reply.client.replyText = async (messageId: string, text: string): Promise<void> => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('temporary Post failure');
+    reply.texts.push({ messageId, text });
+  };
+  const config = buildConfig({ output: { transport: 'post' } }, {});
+  const manager = new RuntimeConfigManager(config, () => config);
+  const runner: CodexChatRunnerLike = {
+    async run(_prompt, _options, onChunk): Promise<CodexChatResult> {
+      await onChunk('preserved first block', { continuation: false });
+      await onChunk('second block', { continuation: false });
+      return { sessionId: 'post-send-retry-session' };
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    config.privacy,
+    null,
+    null,
+    null,
+    runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true },
+    'codex_chat',
+    null,
+    { ids: [], names: [] },
+    null,
+    null,
+    manager
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'post-send-retry-1', text: '/detail stream' }));
+    assert.equal(reply.texts.some((item) => item.text === 'preserved first block'), true);
+    assert.deepEqual(reply.errors, ['post-send-retry-1']);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router hot-switches output transport for subsequent turns only', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-output-command');
+  const store = new Store(dbPath, () => 1110);
+  const reply = createFakeReplyWithStatusCards();
+  const codex = createFakeCodexChatRunner(['answer']);
+  const config = buildConfig({ privacy: { admin_user_ids: ['ou_admin'] } }, {});
+  const manager = new RuntimeConfigManager(config, () => config);
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    config.privacy,
+    null,
+    null,
+    null,
+    codex.runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true },
+    'codex_chat',
+    null,
+    { ids: [], names: [] },
+    null,
+    null,
+    manager
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'output-post', text: '/output post', senderId: 'ou_admin' }));
+    await router.handleEvent(textEvent({ messageId: 'output-post-turn', text: '/codex first', senderId: 'ou_admin' }));
+    await router.handleEvent(textEvent({ messageId: 'output-status', text: '/output status', senderId: 'ou_admin' }));
+    await router.handleEvent(textEvent({ messageId: 'output-card', text: '/output card', senderId: 'ou_admin' }));
+    await router.handleEvent(textEvent({ messageId: 'output-card-turn', text: '/codex second', senderId: 'ou_admin' }));
+
+    assert.equal(manager.getSnapshot().config.output.transport, 'card');
+    assert.equal(reply.texts.some((item) => item.messageId === 'output-post-turn' && item.text === 'answer'), true);
+    assert.equal(reply.texts.some((item) => item.messageId === 'output-status' && /Post Markdown/.test(item.text)), true);
+    assert.equal(reply.statusCards.some((item) => item.messageId === 'output-post-turn'), true);
+    assert.equal(reply.statusCards.some((item) => item.messageId === 'output-card-turn'), true);
+    assert.equal(reply.statusUpdates.findLast((item) => item.messageId === 'card-output-post-turn')?.params.output, undefined);
+    assert.equal(reply.statusUpdates.findLast((item) => item.messageId === 'card-output-card-turn')?.params.output, 'answer');
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router keeps an in-flight turn on its captured output transport', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-output-snapshot');
+  const store = new Store(dbPath, () => 1110);
+  const reply = createFakeReplyWithStatusCards();
+  const started = createDeferred<void>();
+  const release = createDeferred<void>();
+  const config = buildConfig({}, {});
+  const manager = new RuntimeConfigManager(config, () => config);
+  const runner: CodexChatRunnerLike = {
+    async run(_prompt, _options, onChunk): Promise<CodexChatResult> {
+      started.resolve();
+      await release.promise;
+      await onChunk('captured card output');
+      return { sessionId: 'captured-card-session' };
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    config.privacy,
+    null,
+    null,
+    null,
+    runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true },
+    'codex_chat',
+    null,
+    { ids: [], names: [] },
+    null,
+    null,
+    manager
+  );
+  try {
+    const turn = router.handleEvent(textEvent({ messageId: 'output-snapshot-turn', text: '/codex wait' }));
+    await started.promise;
+    manager.setOutputTransport('post');
+    release.resolve();
+    await turn;
+
+    assert.equal(reply.statusCards.length, 1);
+    assert.equal(reply.statusUpdates.at(-1)?.params.output, 'captured card output');
+    assert.deepEqual(reply.texts, []);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router restricts output transport switching to administrators', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-output-command-auth');
+  const store = new Store(dbPath, () => 1110);
+  const reply = createFakeReply();
+  const config = buildConfig({ privacy: { admin_user_ids: ['ou_admin'] } }, {});
+  const manager = new RuntimeConfigManager(config, () => config);
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    config.privacy,
+    null,
+    null,
+    null,
+    undefined,
+    undefined,
+    undefined,
+    null,
+    { ids: [], names: [] },
+    null,
+    null,
+    manager
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'output-denied', text: '/output post', senderId: 'ou_member' }));
+    assert.equal(manager.getSnapshot().config.output.transport, 'card');
+    assert.equal(reply.texts[0]?.text, '/output 仅管理员可用。');
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router labels card overflow and delivers the complete long result explicitly', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-card-overflow');
+  const store = new Store(dbPath, () => 1111);
+  const reply = createFakeReplyWithStatusCards();
+  const longOutput = `## Result\n\n${'中'.repeat(6500)}`;
+  const codex = createFakeCodexChatRunner([longOutput]);
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    codex.runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true }
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'overflow-1', text: '/codex long' }));
+
+    const finalUpdate = reply.statusUpdates.at(-1)?.params;
+    assert.equal(finalUpdate?.state, 'done');
+    assert.equal(finalUpdate?.outputTruncated, true);
+    assert.match(finalUpdate?.stage ?? '', /完整结果见后续消息/);
+    assert.deepEqual(reply.texts.map((item) => item.text), [longOutput]);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router repairs fenced Markdown that crosses the retained card tail', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-card-markdown-fence');
+  const store = new Store(dbPath, () => 1111);
+  const reply = createFakeReplyWithStatusCards();
+  const codeLines = Array.from({ length: 900 }, (_, index) => `const value${index} = ${index};`).join('\n');
+  const longOutput = `## Result\n\n\`\`\`ts\n${codeLines}\n\`\`\`\n\nFinal paragraph.`;
+  const codex = createFakeCodexChatRunner([longOutput]);
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    codex.runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true }
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'markdown-fence-1', text: '/codex long markdown' }));
+    const finalOutput = reply.statusUpdates.at(-1)?.params.output ?? '';
+    const fences = [...finalOutput.matchAll(/(?:^|\n)[ \t]{0,3}`{3,}(?=[^`]|$)/g)];
+    assert.equal(finalOutput.startsWith('```text\n'), true);
+    assert.equal(fences.length % 2, 0);
+    assert.match(finalOutput, /Final paragraph\.$/);
+    assert.deepEqual(reply.texts.map((item) => item.text), [longOutput]);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router concatenates continuation chunks without changing Codex text', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-card-continuation');
+  const store = new Store(dbPath, () => 1111);
+  const reply = createFakeReplyWithStatusCards();
+  const runner: CodexChatRunnerLike = {
+    async run(_prompt, _options, onChunk): Promise<CodexChatResult> {
+      await onChunk('alpha', { continuation: false });
+      await onChunk('beta', { continuation: true });
+      await onChunk('gamma', { continuation: false });
+      return { sessionId: 'continuation-session' };
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true }
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'continuation-1', text: '/codex continue' }));
+    assert.equal(reply.statusUpdates.at(-1)?.params.output, 'alphabeta\n\ngamma');
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router retries a failed card patch and falls back to one complete reply', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-card-patch-fallback');
+  const store = new Store(dbPath, () => 1112);
+  const reply = createFakeReplyWithStatusCards();
+  reply.client.updateStatusCard = async (): Promise<void> => {
+    throw new Error('patch unavailable');
+  };
+  const codex = createFakeCodexChatRunner(['first', 'second']);
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    codex.runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true }
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'patch-fallback-1', text: '/codex fallback' }));
+    assert.deepEqual(reply.texts.map((item) => item.text), ['first\n\nsecond']);
+    assert.equal(store.getProcessingJob('patch-fallback-1')?.status, 'replied');
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router reports no output when card patching is unavailable', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-card-no-output-fallback');
+  const store = new Store(dbPath, () => 1113);
+  const reply = createFakeReplyWithStatusCards();
+  reply.client.updateStatusCard = async (): Promise<void> => {
+    throw new Error('patch unavailable');
+  };
+  const codex = createFakeCodexChatRunner([]);
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    codex.runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true }
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'no-output-fallback-1', text: '/codex empty' }));
+    assert.deepEqual(reply.texts.map((item) => item.text), ['Codex 没有返回可显示内容。']);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router preserves partial output when the terminal interruption card patch fails', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-interrupt-card-fallback');
+  const store = new Store(dbPath, () => 1114);
+  const reply = createFakeReplyWithStatusCards();
+  reply.client.updateStatusCard = async (): Promise<void> => { throw new Error('patch unavailable'); };
+  const codex = createInterruptibleCodexChatRunner();
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    codex.runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true },
+    'codex_chat',
+    null,
+    { ids: ['cli_bot'], names: ['Doujie'] }
+  );
+  const send = (messageId: string, prompt: string): Promise<void> => router.handleEvent(textEvent({
+    messageId,
+    text: `@Doujie ${prompt}`,
+    chatId: 'oc_group',
+    chatType: 'group',
+    mentions: [{ key: '@Doujie', name: 'Doujie', id: { app_id: 'cli_bot' } }],
+  }));
+  try {
+    const first = send('interrupt-card-fallback-1', 'first task');
+    await codex.firstStarted;
+    await send('interrupt-card-fallback-2', 'replacement');
+    await first;
+    const fallback = reply.texts.find((item) => item.messageId === 'interrupt-card-fallback-1')?.text ?? '';
+    assert.match(fallback, /任务已被新消息打断/);
+    assert.match(fallback, /partial reply for first task/);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router preserves partial output when interrupted after status-card creation fails', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-interrupt-no-card-fallback');
+  const store = new Store(dbPath, () => 1114);
+  const reply = createFakeReply();
+  const codex = createInterruptibleCodexChatRunner();
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    codex.runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true },
+    'codex_chat'
+  );
+  try {
+    const first = router.handleEvent(textEvent({ messageId: 'interrupt-no-card-1', text: 'first task' }));
+    await codex.firstStarted;
+    await router.handleEvent(textEvent({ messageId: 'interrupt-no-card-2', text: 'replacement' }));
+    await first;
+
+    const fallback = reply.texts.find((item) => item.messageId === 'interrupt-no-card-1')?.text ?? '';
+    assert.match(fallback, /partial reply for first task/);
+    assert.match(fallback, /已被新消息打断/);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router sends the standard error reply when the terminal error card patch fails', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-error-card-fallback');
+  const store = new Store(dbPath, () => 1115);
+  const reply = createFakeReplyWithStatusCards();
+  reply.client.updateStatusCard = async (): Promise<void> => { throw new Error('patch unavailable'); };
+  const runner: CodexChatRunnerLike = {
+    async run(): Promise<CodexChatResult> { throw new Error('codex failed'); },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true }
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'error-card-fallback-1', text: '/codex fail' }));
+    assert.deepEqual(reply.errors, ['error-card-fallback-1']);
+    assert.equal(store.getProcessingJob('error-card-fallback-1')?.status, 'failed');
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router preserves partial Codex output when the run fails', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-error-card-partial-output');
+  const store = new Store(dbPath, () => 1116);
+  const reply = createFakeReplyWithStatusCards();
+  const runner: CodexChatRunnerLike = {
+    async run(_prompt, _options, onChunk): Promise<CodexChatResult> {
+      await onChunk('partial result');
+      throw new Error('codex failed after output');
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true }
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'error-card-partial-1', text: '/codex fail later' }));
+    const finalUpdate = reply.statusUpdates.at(-1)?.params;
+    assert.equal(finalUpdate?.state, 'error');
+    assert.equal(finalUpdate?.output, 'partial result');
+    assert.equal(finalUpdate?.detail, 'codex failed after output');
+    assert.deepEqual(reply.texts, []);
+    assert.equal(store.getProcessingJob('error-card-partial-1')?.status, 'failed');
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router preserves partial output when status-card creation fails before the run fails', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-error-no-card-partial-output');
+  const store = new Store(dbPath, () => 1116);
+  const reply = createFakeReply();
+  const runner: CodexChatRunnerLike = {
+    async run(_prompt, _options, onChunk): Promise<CodexChatResult> {
+      await onChunk('useful partial result');
+      throw new Error('codex failed after output');
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true }
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'error-no-card-partial-1', text: '/codex fail later' }));
+    assert.deepEqual(reply.texts.map((item) => item.text), ['useful partial result']);
+    assert.deepEqual(reply.errors, ['error-no-card-partial-1']);
+    assert.equal(store.getProcessingJob('error-no-card-partial-1')?.status, 'failed');
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router falls back with partial Codex output when the terminal error card patch fails', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-error-card-partial-fallback');
+  const store = new Store(dbPath, () => 1117);
+  const reply = createFakeReplyWithStatusCards();
+  reply.client.updateStatusCard = async (): Promise<void> => { throw new Error('patch unavailable'); };
+  const runner: CodexChatRunnerLike = {
+    async run(_prompt, _options, onChunk): Promise<CodexChatResult> {
+      await onChunk('recoverable partial result');
+      throw new Error('codex failed after output');
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true }
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'error-card-partial-fallback-1', text: '/codex fail later' }));
+    assert.equal(reply.errors.length, 0);
+    assert.match(reply.texts[0]?.text ?? '', /Agent 执行失败：codex failed after output/);
+    assert.match(reply.texts[0]?.text ?? '', /recoverable partial result/);
+    assert.equal(store.getProcessingJob('error-card-partial-fallback-1')?.status, 'failed');
   } finally {
     store.close();
     removeTempDir(dir);
@@ -492,7 +1158,7 @@ test('Router handles /codex as a streaming Codex chat command', async () => {
     assert.deepEqual(codex.prompts, ['hello']);
     assert.equal(codex.options[0]?.sessionKey, 'oc_test:ou_event_root');
     assert.equal(codex.options[0]?.outputMode, 'answer');
-    assert.deepEqual(reply.texts.map((item) => item.text), ['chunk one', 'chunk two']);
+    assert.deepEqual(reply.texts.map((item) => item.text), ['chunk one\n\nchunk two']);
     assert.deepEqual(reaction.reactions, [
       { messageId: 'codex-1', emojiType: 'THINKING' },
       { messageId: 'codex-1', emojiType: 'DONE' },
@@ -562,20 +1228,15 @@ test('Router interrupts an active Codex chat when a newer message uses the same 
     assert.deepEqual(codex.abortedPrompts, ['first task']);
     assert.equal(codex.options[0]?.abortSignal?.aborted, true);
     assert.equal(codex.options[1]?.abortSignal?.aborted, false);
-    assert.deepEqual(
-      reply.texts
-        .map((item) => ({ messageId: item.messageId, text: item.text }))
-        .sort((a, b) => a.messageId.localeCompare(b.messageId)),
-      [
-        { messageId: 'interrupt-1', text: '已被新消息打断，正在处理最新消息。' },
-        { messageId: 'interrupt-2', text: 'reply for second task' },
-      ]
-    );
-    assert.equal(reply.statusUpdates.find((item) => item.messageId === 'card-interrupt-1')?.params.stage, '被新消息打断');
-    assert.equal(reply.statusUpdates.find((item) => item.messageId === 'card-interrupt-2')?.params.stage, '正文已发送完成');
+    assert.deepEqual(reply.texts, []);
+    const interruptedUpdate = reply.statusUpdates.findLast((item) => item.messageId === 'card-interrupt-1');
+    assert.equal(interruptedUpdate?.params.stage, '被新消息打断');
+    assert.equal(interruptedUpdate?.params.output, 'partial reply for first task');
+    assert.equal(reply.statusUpdates.findLast((item) => item.messageId === 'card-interrupt-2')?.params.stage, '结果已完整写入');
     assert.deepEqual(reaction.reactions, [
       { messageId: 'interrupt-1', emojiType: 'THINKING' },
       { messageId: 'interrupt-2', emojiType: 'THINKING' },
+      { messageId: 'interrupt-1', emojiType: 'ERROR' },
       { messageId: 'interrupt-2', emojiType: 'DONE' },
     ]);
     assert.equal(store.getProcessingJob('interrupt-1')?.status, 'replied');
@@ -652,7 +1313,213 @@ test('Router ignores an unchanged polled edit while the original mentioned messa
 
     finished.resolve({ sessionId: 'session-original' });
     await originalRun;
-    assert.deepEqual(reply.texts.map((item) => item.text), ['original reply']);
+    assert.deepEqual(reply.texts, []);
+    assert.equal(reply.statusUpdates.at(-1)?.params.output, 'original reply');
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('A hash-different historical edit cannot interrupt a newer active turn', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-stale-edit-preemption');
+  const store = new Store(dbPath, () => 1135);
+  const reply = createFakeReplyWithStatusCards();
+  const reaction = createFakeReaction();
+  const codex = createInterruptibleCodexChatRunner();
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    codex.runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true },
+    'codex_chat',
+    reaction.client,
+    { ids: ['cli_bot'], names: ['Doujie'] }
+  );
+
+  const current = router.handleEvent(textEvent({
+    messageId: 'current-turn',
+    text: '@Doujie first task',
+    chatId: 'oc_group',
+    chatType: 'group',
+    mentions: [{ key: '@Doujie', name: 'Doujie', id: { app_id: 'cli_bot' } }],
+  }));
+  await codex.firstStarted;
+
+  try {
+    await router.handleEvent(editedTextEvent({
+      messageId: 'historical-message',
+      text: '@Doujie old text with ���',
+      chatId: 'oc_group',
+      chatType: 'group',
+      updateTime: '1783529999000',
+      mentions: [{ key: '@Doujie', name: 'Doujie', id: { app_id: 'cli_bot' } }],
+    }));
+    await router.handleEvent(editedTextEvent({
+      messageId: 'historical-message-without-time',
+      text: '@Doujie old edit without authoritative time',
+      chatId: 'oc_group',
+      chatType: 'group',
+      mentions: [{ key: '@Doujie', name: 'Doujie', id: { app_id: 'cli_bot' } }],
+    }));
+
+    assert.deepEqual(codex.prompts, ['first task']);
+    assert.deepEqual(codex.abortedPrompts, []);
+    assert.equal(reply.texts.some((item) => item.text.includes('已被新消息打断')), false);
+  } finally {
+    await router.handleEvent(textEvent({
+      messageId: 'cleanup-newer-turn',
+      text: '@Doujie cleanup',
+      chatId: 'oc_group',
+      chatType: 'group',
+      mentions: [{ key: '@Doujie', name: 'Doujie', id: { app_id: 'cli_bot' } }],
+    }));
+    await current;
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('A historical /new edit cannot interrupt a newer turn or clear its session binding', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-stale-new-preemption');
+  const store = new Store(dbPath, () => 1135);
+  const reply = createFakeReplyWithStatusCards();
+  const codex = createInterruptibleCodexChatRunner();
+  const stateFile = path.join(dir, 'codex-sessions.json');
+  fs.writeFileSync(stateFile, JSON.stringify({ sessions: { 'oc_test:ou_test': 'session-current' } }), 'utf-8');
+  const privacy = buildConfig({ privacy: { admin_user_ids: ['ou_test'] } }, {}).privacy;
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    privacy,
+    null,
+    null,
+    null,
+    codex.runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true, stateFile },
+    'codex_chat'
+  );
+
+  const current = router.handleEvent(textEvent({
+    messageId: 'current-before-stale-new',
+    text: 'first task',
+    createTime: '1783530000000',
+  }));
+  await codex.firstStarted;
+
+  try {
+    await router.handleEvent(editedTextEvent({
+      messageId: 'historical-new',
+      text: '/new',
+      updateTime: '1783529999000',
+    }));
+
+    assert.deepEqual(codex.abortedPrompts, []);
+    assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, 'utf-8')), {
+      sessions: { 'oc_test:ou_test': 'session-current' },
+    });
+    assert.equal(reply.texts.some((item) => item.text.includes('已切换到新的 Codex session')), false);
+  } finally {
+    await router.handleEvent(textEvent({ messageId: 'cleanup-after-stale-new', text: 'cleanup' }));
+    await current;
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('A historical /new edit cannot clear a newer session after its turn has completed', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-stale-new-after-completion');
+  const store = new Store(dbPath, () => 1135);
+  const reply = createFakeReplyWithStatusCards();
+  const stateFile = path.join(dir, 'codex-sessions.json');
+  fs.writeFileSync(stateFile, JSON.stringify({ sessions: { 'oc_test:ou_test': 'session-current' } }), 'utf-8');
+  const privacy = buildConfig({ privacy: { admin_user_ids: ['ou_test'] } }, {}).privacy;
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    privacy,
+    null,
+    null,
+    null,
+    createFakeCodexChatRunner(['done']).runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true, stateFile },
+    'codex_chat'
+  );
+  try {
+    await router.handleEvent(textEvent({
+      messageId: 'completed-newer-turn',
+      text: 'complete this',
+      createTime: '1783530000000',
+    }));
+    await router.handleEvent(editedTextEvent({
+      messageId: 'historical-new-after-completion',
+      text: '/new',
+      updateTime: '1783529999000',
+    }));
+
+    assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, 'utf-8')), {
+      sessions: { 'oc_test:ou_test': 'session-current' },
+    });
+    assert.equal(reply.texts.some((item) => item.text.includes('已切换到新的 Codex session')), false);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('A newer millisecond edit supersedes an active receive event with a microsecond timestamp', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-mixed-timestamp-units');
+  const store = new Store(dbPath, () => 1135);
+  const reply = createFakeReplyWithStatusCards();
+  const codex = createInterruptibleCodexChatRunner();
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI digest should not run'); } },
+    store,
+    new Set<string>(),
+    reply.client,
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    codex.runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true },
+    'codex_chat'
+  );
+
+  const current = router.handleEvent(textEvent({
+    messageId: 'microsecond-receive',
+    text: 'first task',
+    createTime: '1783530000000000',
+  }));
+  await codex.firstStarted;
+  try {
+    await router.handleEvent(editedTextEvent({
+      messageId: 'millisecond-edit',
+      text: 'newer edited task',
+      updateTime: '1783530001000',
+    }));
+    await current;
+
+    assert.deepEqual(codex.prompts, ['first task', 'newer edited task']);
+    assert.deepEqual(codex.abortedPrompts, ['first task']);
   } finally {
     store.close();
     removeTempDir(dir);
@@ -779,11 +1646,8 @@ test('A late close from an interrupted turn cannot clear or overwrite the newer 
     await second;
 
     assert.deepEqual(aborted, ['first', 'second']);
-    assert.equal(
-      reply.texts.filter((item) => item.text === '已被新消息打断，正在处理最新消息。').length,
-      2
-    );
-    assert.equal(reply.texts.some((item) => item.text === 'third reply'), true);
+    assert.equal(reply.texts.length, 0);
+    assert.equal(reply.statusUpdates.some((item) => item.params.output === 'third reply'), true);
   } finally {
     store.close();
     removeTempDir(dir);
@@ -793,7 +1657,7 @@ test('A late close from an interrupted turn cannot clear or overwrite the newer 
 test('Router handles /detail as a verbose Codex chat command', async () => {
   const { dir, dbPath } = createTempDbPath('doujie-router-detail');
   const store = new Store(dbPath, () => 1120);
-  const reply = createFakeReply();
+  const reply = createFakeReplyWithStatusCards();
   const codex = createFakeCodexChatRunner(['[thread] started session-1', '[turn] started', 'chunk one']);
   const aiPipeline = {
     async process(_text: string): Promise<AIResult> {
@@ -830,13 +1694,10 @@ test('Router handles /detail as a verbose Codex chat command', async () => {
     assert.deepEqual(codex.prompts, ['hello']);
     assert.equal(codex.options[0]?.sessionKey, 'oc_test:ou_event_root');
     assert.equal(codex.options[0]?.outputMode, 'detail');
-    assert.deepEqual(reply.texts.map((item) => item.text), [
-      'Codex 已开始处理。',
-      '[thread] started session-1',
-      '[turn] started',
-      'chunk one',
-      'Codex 任务结束。session: session-1',
-    ]);
+    assert.deepEqual(reply.texts, []);
+    assert.equal(reply.statusCards.length, 1);
+    assert.match(reply.statusCards[0]?.params.detail ?? '', /详细模式/);
+    assert.equal(reply.statusUpdates.at(-1)?.params.output, '[thread] started session-1\n\n[turn] started\n\nchunk one');
     assert.equal(store.getProcessingJob('detail-1')?.mode, 'codex_chat');
   } finally {
     store.close();
@@ -1378,6 +2239,73 @@ test('Router retries a failed message using the stored raw event', async () => {
     assert.equal(store.getProcessingJob('retry-target')?.status, 'replied');
     assert.equal(store.getProcessingJob('retry-target')?.retryCount, 1);
     assert.match(reply.texts[0]?.text ?? '', /Retry started/);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('Router treats an explicit retry as newer than the stored target message', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-retry-freshness');
+  const store = new Store(dbPath, () => 5100);
+  const reply = createFakeReply();
+  const currentStarted = createDeferred<void>();
+  const prompts: string[] = [];
+  const aborted: string[] = [];
+  let oldRuns = 0;
+  const runner: CodexChatRunnerLike = {
+    async run(prompt, options, onChunk): Promise<CodexChatResult> {
+      prompts.push(prompt);
+      if (prompt === 'old failed task') {
+        oldRuns += 1;
+        if (oldRuns === 1) throw new Error('temporary failure');
+        await onChunk('retry completed');
+        return { sessionId: 'retried-session' };
+      }
+      currentStarted.resolve();
+      return new Promise<CodexChatResult>((_resolve, reject) => {
+        options.abortSignal?.addEventListener('abort', () => {
+          aborted.push(prompt);
+          reject(new CodexChatInterruptedError());
+        }, { once: true });
+      });
+    },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('digest should not run'); } },
+    store,
+    new Set<string>(),
+    withoutStatusCards(reply.client),
+    createFakeUrlFetcher(''),
+    undefined,
+    null,
+    null,
+    null,
+    runner,
+    { model: '', workdir: dir, sandbox: 'workspace-write', skipGitRepoCheck: true },
+    'codex_chat'
+  );
+  try {
+    await router.handleEvent(textEvent({
+      messageId: 'retry-old-target', text: 'old failed task', createTime: '100',
+    }));
+    assert.equal(store.getProcessingJob('retry-old-target')?.status, 'failed');
+
+    const current = router.handleEvent(textEvent({
+      messageId: 'retry-current-turn', text: 'current running task', createTime: '200',
+    }));
+    await currentStarted.promise;
+    await router.handleEvent(textEvent({
+      messageId: 'retry-fresh-command', text: '/retry retry-old-target', createTime: '300',
+    }));
+    await current;
+
+    assert.deepEqual(prompts, ['old failed task', 'current running task', 'old failed task']);
+    assert.deepEqual(aborted, ['current running task']);
+    assert.equal(store.getProcessingJob('retry-old-target')?.status, 'replied');
+    assert.equal(reply.texts.some((item) => item.text === 'retry completed'), true);
+    assert.equal(reply.texts.some((item) => /Retry started/.test(item.text)), true);
   } finally {
     store.close();
     removeTempDir(dir);

@@ -46,7 +46,8 @@ const SUPPRESSED_CODEX_NOISE_PATTERNS = [
   /^clamping SessionEnd hook timeout to \d+s in .*\/\.codex\/hooks\.json$/,
 ];
 
-export type CodexChunkHandler = (text: string) => Promise<void>;
+export type CodexChunkMeta = { continuation: boolean };
+export type CodexChunkHandler = (text: string, meta?: CodexChunkMeta) => Promise<void>;
 
 export function buildCodexChatArgs(
   prompt: string,
@@ -188,6 +189,8 @@ export async function runCodexChat(
   let sessionId = previousSessionId;
   let lineBuffer = '';
   let pendingSend = Promise.resolve();
+  let previousOutputWasDelta = false;
+  let streamedDeltaText = '';
   let aborted = false;
   let forceKillTimer: NodeJS.Timeout | null = null;
 
@@ -204,17 +207,21 @@ export async function runCodexChat(
     abort();
   }
 
-  function queueChunk(text: string): void {
-    const normalized = text.trim();
-    if (!normalized) return;
-    for (const chunk of splitForMessage(normalized)) {
-      pendingSend = pendingSend.then(() => onChunk(chunk));
+  function queueChunk(text: string, isDelta = false): void {
+    const normalized = isDelta ? text : text.trim();
+    if (!normalized && !isDelta) return;
+    if (isDelta && text.length === 0) return;
+    const continuesPrevious = isDelta && previousOutputWasDelta;
+    previousOutputWasDelta = isDelta;
+    for (const [index, chunk] of splitForMessage(normalized).entries()) {
+      pendingSend = pendingSend.then(() => onChunk(chunk, { continuation: continuesPrevious || index > 0 }));
     }
   }
 
   const stdoutDone = new Promise<void>((resolve, reject) => {
-    proc.stdout?.on('data', (chunk: Buffer) => {
-      lineBuffer += chunk.toString();
+    proc.stdout?.setEncoding('utf8');
+    proc.stdout?.on('data', (chunk: string) => {
+      lineBuffer += chunk;
       const lines = lineBuffer.split(/\r?\n/);
       lineBuffer = lines.pop() ?? '';
       for (const line of lines) {
@@ -231,8 +238,9 @@ export async function runCodexChat(
     });
   });
 
-  proc.stderr?.on('data', (chunk: Buffer) => {
-    stderr += chunk.toString();
+  proc.stderr?.setEncoding('utf8');
+  proc.stderr?.on('data', (chunk: string) => {
+    stderr += chunk;
   });
 
   let exitCode: number | null;
@@ -275,14 +283,74 @@ export async function runCodexChat(
         sessionId = nextSessionId;
         saveSession(statePath, options.sessionKey, nextSessionId, options.workdir, options.controlSessionDir);
       }
-      const piece = extractCodexText(event, options.outputMode ?? 'answer');
+      const outputMode = options.outputMode ?? 'answer';
+      const deltaEvent = isCodexDeltaEvent(event);
+      const emitDelta = deltaEvent && (outputMode === 'detail' || isAnswerTextDeltaEvent(event));
+      const piece = deltaEvent
+        ? (emitDelta ? extractCodexDeltaText(event) : '')
+        : extractCodexText(event, outputMode);
       if (piece) {
-        queueChunk(piece);
+        if (!deltaEvent && shouldSuppressCompletedDeltaEcho(streamedDeltaText, event, piece)) {
+          streamedDeltaText = '';
+          previousOutputWasDelta = false;
+          return;
+        }
+        streamedDeltaText = deltaEvent ? `${streamedDeltaText}${piece}` : '';
+        queueChunk(piece, deltaEvent);
       }
     } catch {
       queueChunk(trimmed);
     }
   }
+}
+
+export function isCodexDeltaEvent(event: Record<string, unknown>): boolean {
+  const eventType = String(event.type ?? '').toLowerCase();
+  if (eventType.includes('delta') || Object.hasOwn(event, 'delta')) return true;
+  const item = event.item;
+  if (!isRecord(item)) return false;
+  return String(item.type ?? '').toLowerCase().includes('delta') || Object.hasOwn(item, 'delta');
+}
+
+export function isAnswerTextDeltaEvent(event: Record<string, unknown>): boolean {
+  const eventType = String(event.type ?? '').toLowerCase();
+  if (/reasoning|tool|command|session|usage|token/.test(eventType)) return false;
+  if (
+    eventType === 'response.delta' ||
+    /(?:output_text|answer|agent_message|message)\.delta/.test(eventType)
+  ) return true;
+  const item = event.item;
+  if (!isRecord(item)) return !eventType && Object.hasOwn(event, 'delta');
+  const itemType = String(item.type ?? '').toLowerCase();
+  if (/reasoning|tool|command|session|usage|token/.test(itemType)) return false;
+  if (itemType === 'text_delta' || /agent_message|output_text|answer/.test(itemType)) return true;
+  return !eventType && !itemType && Object.hasOwn(event, 'delta');
+}
+
+export function extractCodexDeltaText(event: Record<string, unknown>): string {
+  if (Object.hasOwn(event, 'delta')) return textFromUnknownPreservingWhitespace(event.delta);
+  const item = event.item;
+  if (!isRecord(item)) return '';
+  for (const key of ['delta', 'text', 'content', 'message']) {
+    if (!Object.hasOwn(item, key)) continue;
+    return textFromUnknownPreservingWhitespace(item[key]);
+  }
+  return '';
+}
+
+export function shouldSuppressCompletedDeltaEcho(
+  streamedDeltaText: string,
+  event: Record<string, unknown>,
+  completedText: string
+): boolean {
+  if (!streamedDeltaText) return false;
+  if (streamedDeltaText.trim() !== completedText.trim()) return false;
+  const eventType = String(event.type ?? '').toLowerCase();
+  if (/(?:output_text|answer|agent_message|message)\.(?:done|completed)$/.test(eventType)) return true;
+  const item = event.item;
+  if (!isRecord(item) || String(item.type ?? '') !== 'agent_message') return false;
+  if (eventType && !eventType.includes('completed')) return false;
+  return true;
 }
 
 function terminateProcessTree(pid: number | undefined, signal: NodeJS.Signals): void {
@@ -417,6 +485,21 @@ function textFromUnknown(value: unknown): string {
   if (Array.isArray(value)) {
     const joined = value.map(textFromUnknown).filter(Boolean).join('\n');
     return joined.trim();
+  }
+  return '';
+}
+
+function textFromUnknownPreservingWhitespace(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (isRecord(value)) {
+    for (const key of ['text', 'content', 'message']) {
+      if (!Object.hasOwn(value, key)) continue;
+      const text = textFromUnknownPreservingWhitespace(value[key]);
+      if (text) return text;
+    }
+  }
+  if (Array.isArray(value)) {
+    return value.map(textFromUnknownPreservingWhitespace).join('');
   }
   return '';
 }

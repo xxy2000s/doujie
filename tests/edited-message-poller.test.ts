@@ -5,8 +5,29 @@ import {
   buildChatMessagesListArgs,
   listMessageToEditedEvent,
   parseChatMessagesListOutput,
+  Utf8Accumulator,
   type FeishuListMessage,
 } from '../src/edited-message-poller.js';
+
+test('Utf8Accumulator preserves multi-byte code points across every byte boundary', () => {
+  const input = JSON.stringify({ text: 'A¢中😊𠮷Z' });
+  const bytes = Buffer.from(input, 'utf8');
+
+  for (let boundary = 1; boundary < bytes.length; boundary += 1) {
+    const accumulator = new Utf8Accumulator();
+    accumulator.append(bytes.subarray(0, boundary));
+    accumulator.append(bytes.subarray(boundary));
+    const decoded = accumulator.finish();
+    assert.equal(decoded, input, `boundary ${boundary}`);
+    assert.doesNotMatch(decoded, /�/, `boundary ${boundary}`);
+  }
+});
+
+test('Utf8Accumulator flushes an incomplete trailing sequence deterministically', () => {
+  const accumulator = new Utf8Accumulator();
+  accumulator.append(Buffer.from([0xe4, 0xb8]));
+  assert.equal(accumulator.finish(), '�');
+});
 
 test('buildChatMessagesListArgs uses chat id paging and identity', () => {
   assert.deepEqual(buildChatMessagesListArgs('oc_1', 12, 'user'), [

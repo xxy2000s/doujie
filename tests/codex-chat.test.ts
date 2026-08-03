@@ -7,7 +7,11 @@ import {
   buildCodexChatArgs,
   clearCodexSession,
   extractCodexSessionId,
+  extractCodexDeltaText,
   extractCodexText,
+  isCodexDeltaEvent,
+  isAnswerTextDeltaEvent,
+  shouldSuppressCompletedDeltaEcho,
   type CodexChatOptions,
 } from '../src/ai/codex-chat.js';
 
@@ -93,6 +97,57 @@ test('extractCodexText reads text from common event shapes and skips noise', () 
       },
     }),
     ''
+  );
+});
+
+test('isCodexDeltaEvent identifies top-level and item delta shapes only', () => {
+  assert.equal(isCodexDeltaEvent({ type: 'response.delta', delta: 'a' }), true);
+  assert.equal(isCodexDeltaEvent({ type: 'item.updated', item: { type: 'text_delta', text: 'b' } }), true);
+  assert.equal(isCodexDeltaEvent({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } }), false);
+});
+
+test('isAnswerTextDeltaEvent excludes reasoning tool and session deltas', () => {
+  assert.equal(isAnswerTextDeltaEvent({ delta: 'legacy answer' }), true);
+  assert.equal(isAnswerTextDeltaEvent({ type: 'response.output_text.delta', delta: 'answer' }), true);
+  assert.equal(isAnswerTextDeltaEvent({ type: 'response.delta', delta: 'answer' }), true);
+  assert.equal(isAnswerTextDeltaEvent({ type: 'response.reasoning_summary_text.delta', delta: 'hidden' }), false);
+  assert.equal(isAnswerTextDeltaEvent({ type: 'tool.delta', delta: 'hidden' }), false);
+  assert.equal(isAnswerTextDeltaEvent({ item: { type: 'command_execution_delta', delta: 'hidden' } }), false);
+  assert.equal(isAnswerTextDeltaEvent({ delta: 'hidden', item: { type: 'reasoning_delta' } }), false);
+});
+
+test('extractCodexDeltaText preserves whitespace exactly', () => {
+  assert.equal(extractCodexDeltaText({ type: 'response.delta', delta: ' world\n' }), ' world\n');
+  assert.equal(extractCodexDeltaText({ type: 'response.delta', delta: '\n' }), '\n');
+  assert.equal(
+    extractCodexDeltaText({ type: 'item.updated', item: { type: 'text_delta', content: { text: '  indented' } } }),
+    '  indented'
+  );
+});
+
+test('shouldSuppressCompletedDeltaEcho removes only matching final agent echoes', () => {
+  const completed = { type: 'item.completed', item: { type: 'agent_message', text: 'hello world' } };
+  assert.equal(shouldSuppressCompletedDeltaEcho('hello world', completed, 'hello world'), true);
+  assert.equal(
+    shouldSuppressCompletedDeltaEcho(
+      'hello world',
+      { type: 'response.output_text.done', text: 'hello world' },
+      'hello world'
+    ),
+    true
+  );
+  assert.equal(shouldSuppressCompletedDeltaEcho('hello ', completed, 'hello world'), false);
+  assert.equal(
+    shouldSuppressCompletedDeltaEcho('hello world', { type: 'item.completed', item: { type: 'command_execution' } }, 'hello world'),
+    false
+  );
+  assert.equal(
+    shouldSuppressCompletedDeltaEcho(
+      'hello world',
+      { type: 'response.tool.done', text: 'hello world' },
+      'hello world'
+    ),
+    false
   );
 });
 

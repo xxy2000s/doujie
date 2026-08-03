@@ -13,6 +13,8 @@ export type StatusCardParams = {
   elapsedMs?: number;
   dots?: number;
   sessionId?: string | null;
+  output?: string;
+  outputTruncated?: boolean;
 };
 
 export function formatReply(result: AIResult): string {
@@ -95,6 +97,15 @@ export function buildStatusCard(params: StatusCardParams): Record<string, unknow
   const elapsed = params.elapsedMs === undefined ? '' : `\n**已用时：** ${formatElapsed(params.elapsedMs)}`;
   const session = params.sessionId ? `\n**Session：** \`${params.sessionId}\`` : '';
   const detail = params.detail ? `\n**详情：** ${params.detail}` : '';
+  const output = params.output
+    ? [{
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `${params.outputTruncated ? '**最近输出（较早内容已折叠）：**' : '**输出：**'}\n\n${params.output}`,
+        },
+      }]
+    : [];
 
   return {
     config: {
@@ -117,6 +128,7 @@ export function buildStatusCard(params: StatusCardParams): Record<string, unknow
           content: `**状态：** ${stateLabel}${dots}\n**阶段：** ${params.stage}${elapsed}${session}${detail}`,
         },
       },
+      ...output,
     ],
   };
 }
