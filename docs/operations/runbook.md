@@ -85,6 +85,8 @@ Expected startup lines:
 [doujie] Listener started. Waiting for Feishu events...
 ```
 
+Runtime configuration is watched automatically. Use `/status` for watcher state and `/features` for effective scoped feature values. Security-policy removal or permission broadening is rejected by the watcher and requires an administrator `/reload`; see [Runtime Configuration Operations](runtime-config.md).
+
 ## Feishu E2E Test
 
 Use an existing Doujie chat. Keep the real chat id in private operator notes or shell history, not in git.

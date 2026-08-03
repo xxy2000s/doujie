@@ -39,12 +39,25 @@ export type HeadlessAgentRunnerOptions = {
   codexSkipGitRepoCheck: boolean;
 };
 
+export type ProviderCommandRunner = (
+  provider: AgentProvider,
+  args: string[],
+  cwd: string
+) => Promise<ProviderProcessResult>;
+
+export type HeadlessAgentRuntimeDefaults = {
+  model: string;
+  workdir: string;
+  sandbox: NonNullable<CreateAgentSessionDraft['sandbox']>;
+  skipGitRepoCheck: boolean;
+};
+
 export const DEFAULT_CODEX_AGENT_SANDBOX = 'danger-full-access' as const;
 export const DEFAULT_CODEX_AGENT_SKIP_GIT_REPO_CHECK = true;
 
 export type HeadlessAgentRunnerLike = {
-  create(draft: CreateAgentSessionDraft): Promise<AgentSessionRecord>;
-  dispatch(input: DispatchAgentSessionInput): Promise<{ record: AgentSessionRecord; text: string }>;
+  create(draft: CreateAgentSessionDraft, defaults?: HeadlessAgentRuntimeDefaults): Promise<AgentSessionRecord>;
+  dispatch(input: DispatchAgentSessionInput, defaults?: HeadlessAgentRuntimeDefaults): Promise<{ record: AgentSessionRecord; text: string }>;
 };
 
 export class HeadlessAgentRunner implements HeadlessAgentRunnerLike {
@@ -53,24 +66,34 @@ export class HeadlessAgentRunner implements HeadlessAgentRunnerLike {
     private readonly options: HeadlessAgentRunnerOptions = {
       codexSandbox: DEFAULT_CODEX_AGENT_SANDBOX,
       codexSkipGitRepoCheck: DEFAULT_CODEX_AGENT_SKIP_GIT_REPO_CHECK,
-    }
+    },
+    private readonly commandRunner: ProviderCommandRunner = runProviderCommand
   ) {}
 
-  async create(draft: CreateAgentSessionDraft): Promise<AgentSessionRecord> {
+  async create(
+    draft: CreateAgentSessionDraft,
+    defaults?: HeadlessAgentRuntimeDefaults
+  ): Promise<AgentSessionRecord> {
     const cwd = resolveExistingDirectory(draft.cwd);
+    const sandbox = defaults?.sandbox ?? this.options.codexSandbox;
+    const skipGitRepoCheck = defaults?.skipGitRepoCheck ?? this.options.codexSkipGitRepoCheck;
+    const model = draft.provider === 'codex'
+      ? draft.model ?? defaults?.model ?? ''
+      : draft.model ?? '';
     const effectiveDraft =
       draft.provider === 'codex'
         ? {
             ...draft,
             cwd,
-            sandbox: this.options.codexSandbox,
-            skipGitRepoCheck: this.options.codexSkipGitRepoCheck,
+            model,
+            sandbox,
+            skipGitRepoCheck,
           }
         : { ...draft, cwd };
     const result =
       draft.provider === 'codex'
-        ? await runProviderCommand('codex', buildCodexCreateArgs(effectiveDraft), cwd)
-        : await runProviderCommand('claude', buildClaudeCreateArgs(effectiveDraft), cwd);
+        ? await this.commandRunner('codex', buildCodexCreateArgs(effectiveDraft), cwd)
+        : await this.commandRunner('claude', buildClaudeCreateArgs(effectiveDraft), cwd);
     if (!result.sessionId) {
       throw new Error(`${draft.provider} did not return a native session id`);
     }
@@ -86,9 +109,9 @@ export class HeadlessAgentRunner implements HeadlessAgentRunnerLike {
       lastUsedAt: null,
       createdBy: draft.createdBy,
       launch: {
-        model: draft.model ?? '',
-        sandbox: draft.provider === 'codex' ? this.options.codexSandbox : '',
-        skipGitRepoCheck: draft.provider === 'codex' ? this.options.codexSkipGitRepoCheck : false,
+        model,
+        sandbox: draft.provider === 'codex' ? sandbox : '',
+        skipGitRepoCheck: draft.provider === 'codex' ? skipGitRepoCheck : false,
         permissionMode: draft.provider === 'claude' ? draft.permissionMode ?? 'default' : '',
         outputFormat: draft.provider === 'codex' ? 'json' : 'json',
       },
@@ -96,31 +119,39 @@ export class HeadlessAgentRunner implements HeadlessAgentRunnerLike {
     return this.registry.upsert(record);
   }
 
-  async dispatch(input: DispatchAgentSessionInput): Promise<{ record: AgentSessionRecord; text: string }> {
+  async dispatch(
+    input: DispatchAgentSessionInput,
+    defaults?: HeadlessAgentRuntimeDefaults
+  ): Promise<{ record: AgentSessionRecord; text: string }> {
     const cwd = resolveExistingDirectory(input.record.cwd);
+    const sandbox = defaults?.sandbox ?? this.options.codexSandbox;
+    const skipGitRepoCheck = defaults?.skipGitRepoCheck ?? this.options.codexSkipGitRepoCheck;
+    const record = input.record.provider === 'codex' && defaults
+      ? { ...input.record, launch: { ...input.record.launch, model: defaults.model } }
+      : input.record;
     const result =
-      input.record.provider === 'codex'
-        ? await runProviderCommand(
+      record.provider === 'codex'
+        ? await this.commandRunner(
             'codex',
-            buildCodexResumeArgs(input.record, input.prompt, {
-              sandbox: this.options.codexSandbox,
-              skipGitRepoCheck: this.options.codexSkipGitRepoCheck,
+            buildCodexResumeArgs(record, input.prompt, {
+              sandbox,
+              skipGitRepoCheck,
             }),
             cwd
           )
-        : await runProviderCommand('claude', buildClaudeResumeArgs(input.record, input.prompt), cwd);
+        : await this.commandRunner('claude', buildClaudeResumeArgs(record, input.prompt), cwd);
     const updated = this.registry.upsert({
-      ...input.record,
-      jsonlPath: findProviderJsonlPath(input.record.provider, input.record.nativeSessionId) ?? input.record.jsonlPath,
+      ...record,
+      jsonlPath: findProviderJsonlPath(record.provider, record.nativeSessionId) ?? record.jsonlPath,
       lastUsedAt: new Date().toISOString(),
       launch:
-        input.record.provider === 'codex'
+        record.provider === 'codex'
           ? {
-              ...input.record.launch,
-              sandbox: this.options.codexSandbox,
-              skipGitRepoCheck: this.options.codexSkipGitRepoCheck,
+              ...record.launch,
+              sandbox,
+              skipGitRepoCheck,
             }
-          : input.record.launch,
+          : record.launch,
     });
     return { record: updated, text: result.text };
   }

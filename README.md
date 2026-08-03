@@ -48,6 +48,8 @@ Feishu commands:
 ```text
 /help
 /status
+/features
+/reload
 /sessions
 /agent-sessions [alias]
 /new [prompt]
@@ -129,6 +131,13 @@ feishu:
 storage:
   db_path: ~/.doujie/data.db
 
+features:
+  quoted_message:
+    enabled: true
+    max_chars: 20000
+    max_depth: 3
+    include_attachments: false
+
 privacy:
   # Administrators may use management commands and project Agents.
   admin_user_ids:
@@ -152,6 +161,18 @@ privacy:
 ```
 
 `/output post` and `/output card` are administrator-only and apply immediately to subsequent turns in the current daemon process. Post mode keeps one lifecycle status card while sending the actual process and result as segmented Markdown messages; Card mode writes the output into the status card itself. `/output status` shows the active transport. To keep a mode across daemon restarts, set `output.transport` in `~/.doujie/config.yaml`; `/reload` hot-applies that field. `DOUJIE_OUTPUT_TRANSPORT` has highest precedence when present.
+
+### Runtime Configuration
+
+`/features` shows the effective feature values for the current chat scope. `/status` shows the active configuration version, source, watcher state, lifecycle actions, and only sanitized reload failures.
+
+Doujie watches `~/.doujie/config.yaml` and hot-applies valid non-downgrade changes. Hot fields include output transport, feature/group overrides, privacy routing, Codex model/workdir/sandbox/skip-git defaults, bot mention matchers, edited-message polling, and attachment extraction policy. Storage paths, the control-session root, Feishu listener identity, and listener chat subscriptions remain restart-bound.
+
+Automatic watcher reload is intentionally conservative. It rejects changes that remove or alter authorization sets, remove deny/skip/redact protections, alter bot mention ID/name matcher sets, clear a configured Codex model, change the actual Codex workdir location, make the sandbox more permissive, or enable skip-git checking bypass. Workdir comparison normalizes relative segments and resolves existing symlinks, so equivalent spellings such as `.` and `./`, or symlinks to the same target, remain eligible for automatic reload. Any real workdir move requires the administrator-only `/reload` command. This prevents syntactically valid partial files written during editing from silently installing defaults. The tradeoff is that some legitimate security-policy edits require this explicit confirmation.
+
+Quoted-message context follows direct parents only, stops at `max_depth`, detects cycles, and applies one total Unicode character budget. It accepts only safely normalized text/post/card fields. Attachment metadata is included only when enabled and contains bounded names/types, never downloaded content, keys, URLs, tokens, or IDs. If any direct level is unavailable or not displayable under the active attachment policy, the entire quote chain is discarded and only the current message is sent to Codex.
+
+See [`config.example.yaml`](config.example.yaml) and [`docs/operations/runtime-config.md`](docs/operations/runtime-config.md).
 
 ### Access Isolation And Group Context
 
@@ -195,7 +216,7 @@ Behavior:
 - Router privacy rules still apply after polling.
 - Edited message versions are deduplicated, so the same edit is not replied to repeatedly.
 
-To add a real group later, find its `chat_id` and append it to `feishu.edit_polling.chat_ids`, then rebuild and restart the daemon. You can also ask 豆姐 to add a named group to edited-message polling; it should resolve the group, update `~/.doujie/config.yaml`, and restart `com.doujie.daemon`.
+To add a real group later, find its `chat_id` and append it to `feishu.edit_polling.chat_ids`. A complete non-downgrade edit is hot-reloaded; `/status` reports watcher/reconciliation state. You can also ask 豆姐 to update the configuration, but intentional authorization downgrades still require administrator `/reload` confirmation.
 
 ## Development
 

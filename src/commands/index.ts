@@ -10,7 +10,12 @@ import { createBackupHandler, createCleanupHandler, createExportHandler } from '
 import { createSessionHandler, createSessionsHandler } from './sessions.js';
 import { createAgentSessionsHandler } from './agent-sessions.js';
 import { createReloadHandler } from './reload.js';
-import type { ConfigReloadResult } from '../runtime-config.js';
+import { createFeaturesHandler } from './features.js';
+import type {
+  ConfigReloadResult,
+  EffectiveFeatureProjection,
+  RuntimeConfigStatus,
+} from '../runtime-config.js';
 
 export type CommandRuntime = {
   startedAt: number;
@@ -23,6 +28,8 @@ export type CommandRuntime = {
   clock?: () => number;
   getListenerStatus(): ListenerStatus;
   reloadConfig?: () => Promise<ConfigReloadResult>;
+  getRuntimeConfigStatus?: () => RuntimeConfigStatus;
+  getEffectiveFeatures?: (chatId: string) => EffectiveFeatureProjection;
 };
 
 function defaultRuntime(): CommandRuntime {
@@ -132,6 +139,12 @@ export function createCommandDefinitions(
       usage: 'output <status|post|card>',
       description: 'Inspect or hot-switch the Codex output transport',
       handler: async (): Promise<string> => 'Output transport is handled by the router.',
+    },
+    {
+      name: 'features',
+      usage: 'features',
+      description: 'Show effective runtime features for this chat',
+      handler: createFeaturesHandler(runtime.getEffectiveFeatures),
     },
     {
       name: 'reload',

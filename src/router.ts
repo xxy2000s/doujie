@@ -55,6 +55,7 @@ import {
 } from './qa.js';
 import { AgentSessionIntentController, type AgentSessionIntentResult } from './agent-session-intent.js';
 import { HeadlessAgentRunner } from './headless-agent-runner.js';
+import type { HeadlessAgentRuntimeDefaults } from './headless-agent-runner.js';
 import { MESSAGE_RECEIVE_EVENT, MESSAGE_UPDATED_EVENTS } from './listener.js';
 import {
   resolveQuotedMessageFeature,
@@ -62,8 +63,9 @@ import {
   type RuntimeConfigSource,
 } from './runtime-config.js';
 import {
-  formatQuotedMessagePrompt,
+  formatQuotedMessageChainPrompt,
   normalizeDirectParentId,
+  resolveQuotedMessageChain,
   selectQuotedMessageId,
   type QuotedMessageProvider,
 } from './quoted-message.js';
@@ -104,7 +106,10 @@ export type ReactionClient = {
 };
 
 export type AgentSessionIntentControllerLike = {
-  handle(message: MessageContent): Promise<AgentSessionIntentResult | null>;
+  handle(
+    message: MessageContent,
+    defaults?: HeadlessAgentRuntimeDefaults
+  ): Promise<AgentSessionIntentResult | null>;
   hasPendingConfirmation?(message: MessageContent): boolean;
 };
 
@@ -131,7 +136,7 @@ const defaultCodexChatRunner: CodexChatRunnerLike = {
 };
 
 const ADMIN_COMMANDS = new Set([
-  'new', 'detail', 'reload', 'retry', 'redo', 'retag', 'merge-tag',
+  'new', 'detail', 'features', 'reload', 'retry', 'redo', 'retag', 'merge-tag',
   'errors', 'sessions', 'agent-sessions', 'backup', 'export', 'cleanup', 'output',
 ]);
 
@@ -178,6 +183,7 @@ export class Router {
   private groupContextProvider: GroupContextProvider | null;
   private runtimeConfigSource: RuntimeConfigSource | null;
   private quotedMessageProvider: QuotedMessageProvider | null;
+  private attachmentExtractorFactory: ((config: RuntimeConfigSnapshot['config']['attachments']) => AttachmentExtractor) | null;
 
   constructor(
     commands: Map<string, CommandHandler>,
@@ -203,7 +209,8 @@ export class Router {
     agentSessionIntentController: AgentSessionIntentControllerLike | null = new AgentSessionIntentController(new HeadlessAgentRunner()),
     groupContextProvider: GroupContextProvider | null = null,
     runtimeConfigSource: RuntimeConfigSource | null = null,
-    quotedMessageProvider: QuotedMessageProvider | null = null
+    quotedMessageProvider: QuotedMessageProvider | null = null,
+    attachmentExtractorFactory: ((config: RuntimeConfigSnapshot['config']['attachments']) => AttachmentExtractor) | null = null
   ) {
     this.commands = commands;
     this.aiPipeline = aiPipeline;
@@ -224,15 +231,17 @@ export class Router {
     this.groupContextProvider = groupContextProvider;
     this.runtimeConfigSource = runtimeConfigSource;
     this.quotedMessageProvider = quotedMessageProvider;
+    this.attachmentExtractorFactory = attachmentExtractorFactory;
   }
 
   async handleEvent(event: FeishuEvent): Promise<void> {
     const runtimeSnapshot = this.runtimeConfigSource?.getSnapshot() ?? null;
-    const message = this.extractMessage(event);
+    const message = this.extractMessage(event, runtimeSnapshot);
     if (!message) return;
 
     const messageId = message.messageId;
-    const privacyDecision = evaluateMessagePrivacy(message, event, this.privacy);
+    const privacy = this.getPrivacy(runtimeSnapshot);
+    const privacyDecision = evaluateMessagePrivacy(message, event, privacy);
     const messageToSave =
       privacyDecision.action === 'skip'
         ? { ...message, text: privacyDecision.safeText, rawContent: privacyDecision.safeText }
@@ -245,7 +254,8 @@ export class Router {
       : false;
     const contentVersionKey = this.getMessageContentVersionKey(
       messageToSave,
-      quoteRelationshipAffectsVersion
+      quoteRelationshipAffectsVersion,
+      runtimeSnapshot
     );
     if (isEditedMessage) {
       const versionKey = this.getMessageEventVersionKey(event, messageToSave);
@@ -256,13 +266,13 @@ export class Router {
         previousMessage &&
         !previousMessage.parentId &&
         messageToSave.parentId &&
-        this.getMessageContentVersionKey(previousMessage, false) ===
-          this.getMessageContentVersionKey(messageToSave, false)
+        this.getMessageContentVersionKey(previousMessage, false, runtimeSnapshot) ===
+          this.getMessageContentVersionKey(messageToSave, false, runtimeSnapshot)
       );
       if (existingContent !== null) {
         const isNewEventVersion = this.store.recordMessageEventVersion(messageId, eventType, versionKey);
         if (!isNewEventVersion) {
-          console.log('[router] Duplicate message edit skipped:', messageId, versionKey);
+          console.log('[router] Duplicate message edit skipped:', this.redactLog(messageId, runtimeSnapshot), versionKey);
           return;
         }
         const isNewContentVersion = this.store.recordMessageEventVersion(
@@ -280,10 +290,10 @@ export class Router {
               messageType: messageToSave.messageType,
               rawEvent: privacyDecision.rawEvent,
             });
-            console.log('[router] Reply relationship enrichment stored without reprocessing:', messageId);
+            console.log('[router] Reply relationship enrichment stored without reprocessing:', this.redactLog(messageId, runtimeSnapshot));
             return;
           }
-          console.log('[router] Unchanged message edit skipped:', messageId, contentVersionKey);
+          console.log('[router] Unchanged message edit skipped:', this.redactLog(messageId, runtimeSnapshot), contentVersionKey);
           return;
         }
       }
@@ -300,7 +310,7 @@ export class Router {
         this.store.recordMessageEventVersion(messageId, 'message.content_v1', contentVersionKey);
       }
       if (isRelationshipOnlyChange && existingJob) {
-        console.log('[router] Reply relationship enrichment stored without reprocessing:', messageId);
+        console.log('[router] Reply relationship enrichment stored without reprocessing:', this.redactLog(messageId, runtimeSnapshot));
         return;
       }
     } else {
@@ -315,18 +325,18 @@ export class Router {
       });
 
       if (!saved) {
-        console.log('[router] Duplicate message skipped:', messageId);
+        console.log('[router] Duplicate message skipped:', this.redactLog(messageId, runtimeSnapshot));
         return;
       }
       this.store.recordMessageEventVersion(messageId, 'message.content_v1', contentVersionKey);
     }
 
-    if (!this.shouldProcessMessage(messageToSave)) {
+    if (!this.shouldProcessMessage(messageToSave, runtimeSnapshot)) {
       console.log(
         isEditedMessage
           ? '[router] Edited group message stored without bot mention:'
           : '[router] Group message stored without bot mention:',
-        messageId
+        this.redactLog(messageId, runtimeSnapshot)
       );
       return;
     }
@@ -334,10 +344,10 @@ export class Router {
     this.store.createProcessingJob(messageId);
     this.inFlight.add(messageId);
     if (privacyDecision.action === 'skip') {
-      await this.handlePrivacySkippedMessage(messageToSave, privacyDecision.reason);
+      await this.handlePrivacySkippedMessage(messageToSave, privacyDecision.reason, runtimeSnapshot);
       return;
     }
-    await this.downloadAndStoreAttachments(messageToSave);
+    await this.downloadAndStoreAttachments(messageToSave, runtimeSnapshot);
     await this.processMessage(messageToSave, 'default', runtimeSnapshot);
   }
 
@@ -365,7 +375,7 @@ export class Router {
       return false;
     }
 
-    const message = this.extractMessage(event);
+    const message = this.extractMessage(event, runtimeSnapshot);
     if (!message) {
       this.store.markFailed(messageId, 'retry', 'Stored raw event does not contain a message');
       return false;
@@ -387,17 +397,17 @@ export class Router {
         await this.handleCommand(message, runtimeSnapshot);
       } else if (await this.handleGroupContextRequest(message, runtimeSnapshot)) {
         return;
-      } else if (!canRunAgent(message, this.privacy)) {
+      } else if (!canRunAgent(message, this.getPrivacy(runtimeSnapshot))) {
         await this.replyClient.replyText(message.messageId, '你可以使用本群允许的上下文总结功能，但没有权限调度 Codex Agent。');
         this.store.markPrivacySkipped(message.messageId, 'privacy_skip:agent_not_allowed');
         return;
-      } else if (await this.handleAgentSessionIntent(message)) {
+      } else if (await this.handleAgentSessionIntent(message, runtimeSnapshot)) {
         return;
       } else {
         await this.handleDefault(message, mode, runtimeSnapshot);
       }
     } catch (err) {
-      console.error('[router] Error processing message:', this.redactLog((err as Error).message));
+      console.error('[router] Error processing message:', this.redactLog((err as Error).message, runtimeSnapshot));
       const job = this.store.getProcessingJob(messageId);
       this.store.markFailed(messageId, job?.stage ?? 'unknown', (err as Error).message);
       try {
@@ -410,12 +420,20 @@ export class Router {
     }
   }
 
-  private async handlePrivacySkippedMessage(message: MessageContent, reason: string): Promise<void> {
+  private async handlePrivacySkippedMessage(
+    message: MessageContent,
+    reason: string,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<void> {
     try {
       await this.replyClient.replyText(message.messageId, `Skipped by privacy rule: ${reason}`);
       this.store.markPrivacySkipped(message.messageId, reason);
     } catch (err) {
-      this.store.markFailed(message.messageId, 'privacy_skip', this.redactLog((err as Error).message));
+      this.store.markFailed(
+        message.messageId,
+        'privacy_skip',
+        this.redactLog((err as Error).message, runtimeSnapshot)
+      );
       try {
         await this.replyClient.replyError(message.messageId);
       } catch {
@@ -426,7 +444,10 @@ export class Router {
     }
   }
 
-  private async downloadAndStoreAttachments(message: MessageContent): Promise<void> {
+  private async downloadAndStoreAttachments(
+    message: MessageContent,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<void> {
     if (!this.attachmentDownloader) return;
     const attachments = extractAttachments(message);
     for (const attachment of attachments) {
@@ -443,7 +464,7 @@ export class Router {
         error: result.status === 'failed' ? result.error : null,
       });
       if (result.status === 'downloaded') {
-        await this.extractAndStoreAttachmentText(message.messageId, attachment.resourceKey);
+        await this.extractAndStoreAttachmentText(message.messageId, attachment.resourceKey, runtimeSnapshot);
       }
     }
   }
@@ -474,13 +495,17 @@ export class Router {
     return updateTime ? `update:${updateTime}:hash:${hash}` : `hash:${hash}`;
   }
 
-  private getMessageContentVersionKey(message: MessageContent, includeQuoteRelationship = true): string {
+  private getMessageContentVersionKey(
+    message: MessageContent,
+    includeQuoteRelationship = true,
+    runtimeSnapshot: RuntimeConfigSnapshot | null = null
+  ): string {
     const hash = crypto
       .createHash('sha256')
       .update(JSON.stringify({
         messageType: message.messageType,
         text: message.text,
-        addressedToBot: this.hasBotMention(message),
+        addressedToBot: this.hasBotMention(message, runtimeSnapshot),
         ...(includeQuoteRelationship ? {
           quoteRelationshipId: selectQuotedMessageId(message.parentId, message.rootId),
         } : {}),
@@ -490,7 +515,10 @@ export class Router {
     return `hash:${hash}`;
   }
 
-  private extractMessage(event: FeishuEvent): MessageContent | null {
+  private extractMessage(
+    event: FeishuEvent,
+    runtimeSnapshot: RuntimeConfigSnapshot | null = null
+  ): MessageContent | null {
     const msg = event.event?.message;
     if (!msg) return null;
 
@@ -530,40 +558,45 @@ export class Router {
     };
     return {
       ...message,
-      text: this.stripBotMentionText(message),
+      text: this.stripBotMentionText(message, runtimeSnapshot),
     };
   }
 
-  private shouldProcessMessage(message: MessageContent): boolean {
+  private shouldProcessMessage(
+    message: MessageContent,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): boolean {
     if (!this.isGroupChat(message.chatType)) return true;
-    return this.hasBotMention(message) || Boolean(this.agentSessionIntentController?.hasPendingConfirmation?.(message));
+    return this.hasBotMention(message, runtimeSnapshot) || Boolean(this.agentSessionIntentController?.hasPendingConfirmation?.(message));
   }
 
   private isGroupChat(chatType: string): boolean {
     return chatType === 'group';
   }
 
-  private hasBotMention(message: MessageContent): boolean {
+  private hasBotMention(message: MessageContent, runtimeSnapshot: RuntimeConfigSnapshot | null): boolean {
     if (message.mentions.length === 0) return false;
-    const hasConfiguredMatcher = this.botMentionConfig.ids.length > 0 || this.botMentionConfig.names.length > 0;
+    const config = this.getBotMentionConfig(runtimeSnapshot);
+    const hasConfiguredMatcher = config.ids.length > 0 || config.names.length > 0;
     if (!hasConfiguredMatcher) return true;
-    return message.mentions.some((mention) => this.isConfiguredBotMention(mention));
+    return message.mentions.some((mention) => this.isConfiguredBotMention(mention, config));
   }
 
-  private isConfiguredBotMention(mention: FeishuMention): boolean {
-    const configuredIds = new Set(this.botMentionConfig.ids.map((id) => id.trim()).filter(Boolean));
-    const configuredNames = new Set(this.botMentionConfig.names.map(normalizeMentionName).filter(Boolean));
+  private isConfiguredBotMention(mention: FeishuMention, config: BotMentionConfig): boolean {
+    const configuredIds = new Set(config.ids.map((id) => id.trim()).filter(Boolean));
+    const configuredNames = new Set(config.names.map(normalizeMentionName).filter(Boolean));
     return (
       this.extractMentionIds(mention).some((id) => configuredIds.has(id)) ||
       this.extractMentionNames(mention).some((name) => configuredNames.has(normalizeMentionName(name)))
     );
   }
 
-  private stripBotMentionText(message: MessageContent): string {
-    if (!this.isGroupChat(message.chatType) || !this.hasBotMention(message)) return message.text;
+  private stripBotMentionText(message: MessageContent, runtimeSnapshot: RuntimeConfigSnapshot | null): string {
+    if (!this.isGroupChat(message.chatType) || !this.hasBotMention(message, runtimeSnapshot)) return message.text;
+    const config = this.getBotMentionConfig(runtimeSnapshot);
     let text = message.text;
     for (const mention of message.mentions) {
-      if (!this.isConfiguredBotMention(mention) && (this.botMentionConfig.ids.length > 0 || this.botMentionConfig.names.length > 0)) {
+      if (!this.isConfiguredBotMention(mention, config) && (config.ids.length > 0 || config.names.length > 0)) {
         continue;
       }
       for (const key of [mention.key, ...this.extractMentionNames(mention).map((name) => `@${name}`)]) {
@@ -624,12 +657,13 @@ export class Router {
 
     if (!commandName) return;
 
-    if (ADMIN_COMMANDS.has(commandName) && !isPrivacyAdmin(message.senderId, this.privacy)) {
+    const privacy = this.getPrivacy(runtimeSnapshot);
+    if (ADMIN_COMMANDS.has(commandName) && !isPrivacyAdmin(message.senderId, privacy)) {
       await this.replyClient.replyText(message.messageId, `/${commandName} 仅管理员可用。`);
       this.store.markPrivacySkipped(message.messageId, 'privacy_skip:admin_required');
       return;
     }
-    if ((commandName === 'codex' || commandName === 'digest' || commandName === 'ask') && !canRunAgent(message, this.privacy)) {
+    if ((commandName === 'codex' || commandName === 'digest' || commandName === 'ask') && !canRunAgent(message, privacy)) {
       await this.replyClient.replyText(message.messageId, `/${commandName} 需要 Agent 调度权限。`);
       this.store.markPrivacySkipped(message.messageId, 'privacy_skip:agent_not_allowed');
       return;
@@ -641,7 +675,7 @@ export class Router {
     }
 
     if (commandName === 'output') {
-      await this.handleOutputCommand(message, args);
+      await this.handleOutputCommand(message, args, runtimeSnapshot);
       return;
     }
 
@@ -651,7 +685,7 @@ export class Router {
     }
 
     if (commandName === 'digest') {
-      await this.handleDigestCommand(message, args);
+      await this.handleDigestCommand(message, args, runtimeSnapshot);
       return;
     }
 
@@ -661,7 +695,7 @@ export class Router {
     }
 
     if (commandName === 'redo') {
-      await this.handleRedoCommand(message, args);
+      await this.handleRedoCommand(message, args, runtimeSnapshot);
       return;
     }
 
@@ -676,7 +710,7 @@ export class Router {
     }
 
     if (commandName === 'ask') {
-      await this.handleAskCommand(message, args);
+      await this.handleAskCommand(message, args, runtimeSnapshot);
       return;
     }
 
@@ -710,9 +744,12 @@ export class Router {
     }
   }
 
-  private async handleAgentSessionIntent(message: MessageContent): Promise<boolean> {
+  private async handleAgentSessionIntent(
+    message: MessageContent,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<boolean> {
     if (!this.agentSessionIntentController) return false;
-    if (!isPrivacyAdmin(message.senderId, this.privacy)) {
+    if (!isPrivacyAdmin(message.senderId, this.getPrivacy(runtimeSnapshot))) {
       const pending = this.agentSessionIntentController.hasPendingConfirmation?.(message) ?? false;
       if (pending || /(codex|claude|agent|session|会话)/iu.test(message.text)) {
         await this.replyClient.replyText(message.messageId, '项目 Agent 创建和恢复仅管理员可用。');
@@ -721,7 +758,15 @@ export class Router {
       }
       return false;
     }
-    const result = await this.agentSessionIntentController.handle(message);
+    const result = await this.agentSessionIntentController.handle(
+      message,
+      runtimeSnapshot ? {
+        model: runtimeSnapshot.config.codex.model,
+        workdir: runtimeSnapshot.config.codex.workdir,
+        sandbox: runtimeSnapshot.config.codex.sandbox,
+        skipGitRepoCheck: runtimeSnapshot.config.codex.skipGitRepoCheck,
+      } : undefined
+    );
     if (!result) return false;
     this.store.setProcessingMode(message.messageId, 'agent_session');
     this.store.markProcessing(message.messageId, 'agent_session');
@@ -737,7 +782,7 @@ export class Router {
     if (message.chatType !== 'group' || !this.groupContextProvider) return false;
     const request = parseGroupContextRequest(message.text);
     if (!request) return false;
-    const rule = findPrivacyGroupRule(message.chatId, this.privacy);
+    const rule = findPrivacyGroupRule(message.chatId, this.getPrivacy(runtimeSnapshot));
     if (!rule?.contextEnabled) return false;
 
     this.store.setProcessingMode(message.messageId, 'codex_chat');
@@ -804,7 +849,11 @@ export class Router {
     this.store.markReplied(message.messageId);
   }
 
-  private async handleDigestCommand(message: MessageContent, args: string): Promise<void> {
+  private async handleDigestCommand(
+    message: MessageContent,
+    args: string,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<void> {
     const text = args.trim();
     if (!text) {
       await this.replyClient.replyText(message.messageId, 'Usage: /digest <text>');
@@ -813,7 +862,7 @@ export class Router {
     }
 
     this.store.updateMessageContent(message.messageId, text);
-    await this.runDigest({ ...message, text }, text, 'digest', true);
+    await this.runDigest({ ...message, text }, text, 'digest', true, runtimeSnapshot);
   }
 
   private async handleSkipCommand(message: MessageContent, args: string): Promise<void> {
@@ -827,7 +876,11 @@ export class Router {
     this.store.markReplied(message.messageId);
   }
 
-  private async handleRedoCommand(message: MessageContent, args: string): Promise<void> {
+  private async handleRedoCommand(
+    message: MessageContent,
+    args: string,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<void> {
     const targetMessageId = args.trim();
     if (!targetMessageId) {
       await this.replyClient.replyText(message.messageId, 'Usage: /redo <message_id>');
@@ -853,7 +906,7 @@ export class Router {
     }
 
     try {
-      const result = await this.runDigest(targetMessage, targetMessage.text, 'redo', false);
+      const result = await this.runDigest(targetMessage, targetMessage.text, 'redo', false, runtimeSnapshot);
       await this.replyClient.replyText(
         message.messageId,
         result ? `Redo complete for ${targetMessageId}.` : `Redo skipped for ${targetMessageId} by privacy rule.`
@@ -912,7 +965,11 @@ export class Router {
     this.store.markReplied(message.messageId);
   }
 
-  private async handleAskCommand(message: MessageContent, args: string): Promise<void> {
+  private async handleAskCommand(
+    message: MessageContent,
+    args: string,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<void> {
     const question = args.trim();
     if (!question) {
       await this.replyClient.replyText(message.messageId, 'Usage: /ask <question>');
@@ -932,7 +989,7 @@ export class Router {
     }
 
     let prompt = buildAskPrompt(question, evidence);
-    const contentPrivacy = evaluateContentPrivacy(prompt, this.privacy);
+    const contentPrivacy = evaluateContentPrivacy(prompt, this.getPrivacy(runtimeSnapshot));
     if (contentPrivacy.action === 'skip') {
       await this.replyClient.replyText(message.messageId, `Skipped by privacy rule: ${contentPrivacy.reason}`);
       this.store.markPrivacySkipped(message.messageId, contentPrivacy.reason);
@@ -960,9 +1017,13 @@ export class Router {
     return { detailed: false, prompt: trimmed };
   }
 
-  private async handleOutputCommand(message: MessageContent, args: string): Promise<void> {
+  private async handleOutputCommand(
+    message: MessageContent,
+    args: string,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<void> {
     const requested = args.trim().toLowerCase();
-    const current = this.runtimeConfigSource?.getSnapshot().config.output.transport ?? 'card';
+    const current = runtimeSnapshot?.config.output.transport ?? 'card';
     if (!requested || requested === 'status') {
       await this.replyClient.replyText(
         message.messageId,
@@ -981,10 +1042,10 @@ export class Router {
       this.store.markReplied(message.messageId);
       return;
     }
-    const snapshot = this.runtimeConfigSource.setOutputTransport(requested);
+    await this.runtimeConfigSource.setOutputTransport(requested);
     await this.replyClient.replyText(
       message.messageId,
-      `输出模式已切换为 **${formatOutputTransport(snapshot.config.output.transport)}**，从下一条任务开始生效。`
+      `输出模式已从 **${formatOutputTransport(current)}** 切换为 **${formatOutputTransport(requested)}**，从下一条任务开始生效。`
     );
     this.store.markReplied(message.messageId);
   }
@@ -996,12 +1057,12 @@ export class Router {
   ): Promise<void> {
     const sessionKey = this.getCodexSessionKey(message);
     if (this.isStaleCodexTurn(sessionKey, message.inputTimestamp)) {
-      console.warn('[router] Stale /new generation skipped:', message.messageId);
+      console.warn('[router] Stale /new generation skipped:', this.redactLog(message.messageId, runtimeSnapshot));
       this.store.markReplied(message.messageId);
       return;
     }
     this.recordCodexInputTimestamp(sessionKey, message.inputTimestamp);
-    this.interruptActiveCodexTurn(sessionKey);
+    this.interruptActiveCodexTurn(sessionKey, runtimeSnapshot);
     clearCodexSession(sessionKey, this.codexChatOptions.stateFile);
     deactivateControlSession(sessionKey, this.codexChatOptions.controlSessionDir);
     const prompt = args.trim();
@@ -1033,14 +1094,15 @@ export class Router {
     this.store.setProcessingMode(message.messageId, 'codex_chat');
     this.store.markProcessing(message.messageId, 'codex_chat');
     const sessionKey = sessionKeyOverride ?? this.getCodexSessionKey(message);
-    const turn = this.startCodexTurn(sessionKey, message.messageId, message.inputTimestamp);
+    const turn = this.startCodexTurn(sessionKey, message.messageId, message.inputTimestamp, runtimeSnapshot);
     if (!turn) {
-      console.warn('[router] Stale message generation skipped:', message.messageId);
+      console.warn('[router] Stale message generation skipped:', this.redactLog(message.messageId, runtimeSnapshot));
       this.store.markReplied(message.messageId);
       return;
     }
-    await this.addStatusReaction(message.messageId, 'THINKING');
+    await this.addStatusReaction(message.messageId, 'THINKING', runtimeSnapshot);
     const outputTransport = runtimeSnapshot?.config.output.transport ?? 'card';
+    const runtimeCodex = runtimeSnapshot?.config.codex;
     let fallbackOutput = '';
     let postChunksSent = 0;
     let pendingPostOutput = '';
@@ -1054,13 +1116,20 @@ export class Router {
     const statusCard = await this.createCodexStatusCard(
       message.messageId,
       detailed,
-      outputTransport === 'card'
+      outputTransport === 'card',
+      runtimeSnapshot
     );
     try {
       const result = await this.codexChatRunner.run(
         prompt,
         {
           ...this.codexChatOptions,
+          ...(runtimeCodex ? {
+            model: runtimeCodex.model,
+            workdir: runtimeCodex.workdir,
+            sandbox: runtimeCodex.sandbox,
+            skipGitRepoCheck: runtimeCodex.skipGitRepoCheck,
+          } : {}),
           ...(sandboxOverride ? { sandbox: sandboxOverride } : {}),
           sessionKey,
           outputMode: detailed ? 'detail' : 'answer',
@@ -1099,13 +1168,13 @@ export class Router {
       } else {
         await this.replyClient.replyText(message.messageId, fallbackOutput || 'Codex 没有返回可显示内容。');
       }
-      await this.addStatusReaction(message.messageId, 'DONE');
+      await this.addStatusReaction(message.messageId, 'DONE', runtimeSnapshot);
     } catch (err) {
       if (isCodexChatInterruptedError(err) || turn.controller.signal.aborted) {
         statusCard?.stop();
         if (outputTransport === 'post') {
           await flushPostOutput().catch((replyErr: Error) => {
-            console.error('[router] Failed to flush Post output after interrupt:', replyErr.message);
+            console.error('[router] Failed to flush Post output after interrupt:', this.redactLog(replyErr.message, runtimeSnapshot));
           });
         }
         let interruptCardUpdated = false;
@@ -1115,7 +1184,7 @@ export class Router {
             if (overflow) await this.replyClient.replyText(message.messageId, overflow);
             interruptCardUpdated = true;
           } catch (cardErr) {
-            console.error('[router] Failed to update status card after interrupt:', (cardErr as Error).message);
+            console.error('[router] Failed to update status card after interrupt:', this.redactLog((cardErr as Error).message, runtimeSnapshot));
           }
         } else if (outputTransport === 'card' && fallbackOutput) {
           await this.replyClient.replyText(
@@ -1124,14 +1193,14 @@ export class Router {
           ).then(() => {
             interruptCardUpdated = true;
           }).catch((replyErr: Error) => {
-            console.error('[router] Failed to send fallback output after interrupt:', replyErr.message);
+            console.error('[router] Failed to send fallback output after interrupt:', this.redactLog(replyErr.message, runtimeSnapshot));
           });
         }
         this.store.markProcessing(message.messageId, 'interrupted');
-        await this.addStatusReaction(message.messageId, 'ERROR');
+        await this.addStatusReaction(message.messageId, 'ERROR', runtimeSnapshot);
         if (!interruptCardUpdated) {
           await this.replyClient.replyText(message.messageId, '已被新消息打断，正在处理最新消息。').catch((replyErr: Error) => {
-            console.error('[router] Failed to send interrupt notice:', replyErr.message);
+            console.error('[router] Failed to send interrupt notice:', this.redactLog(replyErr.message, runtimeSnapshot));
           });
         }
         this.store.markReplied(message.messageId);
@@ -1140,11 +1209,11 @@ export class Router {
       statusCard?.stop();
       if (outputTransport === 'post') {
         await flushPostOutput().catch((replyErr: Error) => {
-          console.error('[router] Failed to flush Post output after error:', replyErr.message);
+          console.error('[router] Failed to flush Post output after error:', this.redactLog(replyErr.message, runtimeSnapshot));
         });
       } else if (!statusCard && fallbackOutput) {
         await this.replyClient.replyText(message.messageId, fallbackOutput).catch((replyErr: Error) => {
-          console.error('[router] Failed to send fallback output after error:', replyErr.message);
+          console.error('[router] Failed to send fallback output after error:', this.redactLog(replyErr.message, runtimeSnapshot));
         });
       }
       let errorCardUpdated = false;
@@ -1154,10 +1223,10 @@ export class Router {
           if (overflow) await this.replyClient.replyText(message.messageId, overflow);
           errorCardUpdated = true;
         } catch (cardErr) {
-          console.error('[router] Failed to update status card after error:', (cardErr as Error).message);
+          console.error('[router] Failed to update status card after error:', this.redactLog((cardErr as Error).message, runtimeSnapshot));
         }
       }
-      await this.addStatusReaction(message.messageId, 'ERROR');
+      await this.addStatusReaction(message.messageId, 'ERROR', runtimeSnapshot);
       if (errorCardUpdated) {
         this.store.markFailed(message.messageId, 'codex_chat', (err as Error).message);
         return;
@@ -1172,12 +1241,13 @@ export class Router {
   private startCodexTurn(
     sessionKey: string,
     messageId: string,
-    inputTimestamp?: number
+    inputTimestamp?: number,
+    runtimeSnapshot: RuntimeConfigSnapshot | null = null
   ): ActiveCodexTurn | null {
     if (this.isStaleCodexTurn(sessionKey, inputTimestamp)) {
       return null;
     }
-    this.interruptActiveCodexTurn(sessionKey);
+    this.interruptActiveCodexTurn(sessionKey, runtimeSnapshot);
     const turn = { messageId, controller: new AbortController(), inputTimestamp: inputTimestamp ?? Date.now() };
     this.recordCodexInputTimestamp(sessionKey, turn.inputTimestamp);
     this.activeCodexTurns.set(sessionKey, turn);
@@ -1197,10 +1267,13 @@ export class Router {
     if (latest === undefined || timestamp > latest) this.latestCodexInputTimestamps.set(sessionKey, timestamp);
   }
 
-  private interruptActiveCodexTurn(sessionKey: string): void {
+  private interruptActiveCodexTurn(
+    sessionKey: string,
+    runtimeSnapshot: RuntimeConfigSnapshot | null = null
+  ): void {
     const active = this.activeCodexTurns.get(sessionKey);
     if (!active || active.controller.signal.aborted) return;
-    console.log('[router] Interrupting active Codex chat:', active.messageId);
+    console.log('[router] Interrupting active Codex chat:', this.redactLog(active.messageId, runtimeSnapshot));
     active.controller.abort();
   }
 
@@ -1218,13 +1291,15 @@ export class Router {
   private async createCodexStatusCard(
     messageId: string,
     detailed: boolean,
-    includeOutput: boolean
+    includeOutput: boolean,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
   ): Promise<CodexStatusCardHandle | null> {
     if (!this.replyClient.replyStatusCard || !this.replyClient.updateStatusCard) {
       return null;
     }
 
     const startedAt = Date.now();
+    const redactError = (error: Error): string => this.redactLog(error.message, runtimeSnapshot);
     let dots = 1;
     let stage = '启动 Codex session';
     let stopped = false;
@@ -1251,7 +1326,7 @@ export class Router {
     try {
       statusMessageId = await this.replyClient.replyStatusCard(messageId, buildParams());
     } catch (err) {
-      console.error('[router] Failed to send status card:', (err as Error).message);
+      console.error('[router] Failed to send status card:', redactError(err as Error));
       return null;
     }
     if (!statusMessageId) {
@@ -1271,7 +1346,7 @@ export class Router {
     };
     const enqueuePatch = (force = false): Promise<void> => {
       updateQueue = updateQueue.then(() => patch(force)).catch((err: Error) => {
-        console.error('[router] Failed to update status card:', err.message);
+        console.error('[router] Failed to update status card:', redactError(err));
       });
       return updateQueue;
     };
@@ -1332,7 +1407,7 @@ export class Router {
             ...bounded,
           }));
         } catch (err) {
-          console.error('[router] Failed to finalize status card:', (err as Error).message);
+          console.error('[router] Failed to finalize status card:', redactError(err as Error));
           return includeOutput ? (output || 'Codex 没有返回可显示内容。') : null;
         }
         return bounded.outputTruncated ? output : null;
@@ -1380,12 +1455,20 @@ export class Router {
     };
   }
 
-  private async addStatusReaction(messageId: string, emojiType: ReactionEmoji): Promise<void> {
+  private async addStatusReaction(
+    messageId: string,
+    emojiType: ReactionEmoji,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<void> {
     if (!this.reactionClient) return;
     try {
       await this.reactionClient.addReaction(messageId, emojiType);
     } catch (err) {
-      console.error('[router] Failed to add reaction:', emojiType, this.redactLog((err as Error).message));
+      console.error(
+        '[router] Failed to add reaction:',
+        emojiType,
+        this.redactLog((err as Error).message, runtimeSnapshot)
+      );
     }
   }
 
@@ -1402,7 +1485,7 @@ export class Router {
     runtimeSnapshot: RuntimeConfigSnapshot | null = null
   ): Promise<void> {
     if (this.defaultMessageMode === 'codex_chat') {
-      console.log('[router] Processing with Codex chat:', message.messageId);
+      console.log('[router] Processing with Codex chat:', this.redactLog(message.messageId, runtimeSnapshot));
       const prompt = await this.prepareDefaultCodexPrompt(message, runtimeSnapshot);
       if (prompt !== null) {
         await this.handleCodexCommand(message, prompt, false, undefined, undefined, runtimeSnapshot);
@@ -1410,8 +1493,8 @@ export class Router {
       return;
     }
 
-    console.log('[router] Processing with AI:', message.messageId);
-    await this.runDigest(message, message.text, mode, true);
+    console.log('[router] Processing with AI:', this.redactLog(message.messageId, runtimeSnapshot));
+    await this.runDigest(message, message.text, mode, true, runtimeSnapshot);
   }
 
   private async prepareDefaultCodexPrompt(
@@ -1432,7 +1515,7 @@ export class Router {
       prompt = `${prompt}\n\n--- 以下为链接内容 ---\n\n${fetchedContent}`;
     }
 
-    const contentPrivacy = evaluateContentPrivacy(prompt, this.privacy);
+    const contentPrivacy = evaluateContentPrivacy(prompt, this.getPrivacy(runtimeSnapshot));
     if (contentPrivacy.action === 'skip') {
       await this.replyClient.replyText(message.messageId, `Skipped by privacy rule: ${contentPrivacy.reason}`);
       this.store.markPrivacySkipped(message.messageId, contentPrivacy.reason);
@@ -1463,7 +1546,7 @@ export class Router {
           this.store.recordMessageEventVersion(
             message.messageId,
             'message.content_v1',
-            this.getMessageContentVersionKey(message, true)
+            this.getMessageContentVersionKey(message, true, runtimeSnapshot)
           );
         }
       } catch {
@@ -1474,9 +1557,25 @@ export class Router {
     if (!relationshipId) return message.text;
 
     try {
-      const quoted = await this.quotedMessageProvider.fetch(relationshipId);
-      if (!quoted) return message.text;
-      return formatQuotedMessagePrompt(message.text, quoted.text, feature.maxChars);
+      const chain = await resolveQuotedMessageChain(
+        this.quotedMessageProvider,
+        relationshipId,
+        feature.maxDepth,
+        feature.includeAttachments
+      );
+      if (chain.degradation === 'unavailable') {
+        console.warn('[router] Quoted-message chain unavailable; using current message only.');
+      }
+      if (chain.messages.length === 0) return message.text;
+      if (!chain.messages.some((item) =>
+        Boolean(item.text) || (feature.includeAttachments && item.attachments.length > 0)
+      )) return message.text;
+      return formatQuotedMessageChainPrompt(
+        message.text,
+        chain.messages,
+        feature.maxChars,
+        feature.includeAttachments
+      );
     } catch {
       console.warn('[router] Quoted-message lookup failed; using current message only.');
       return message.text;
@@ -1487,7 +1586,8 @@ export class Router {
     message: MessageContent,
     inputText: string,
     mode: ProcessingMode,
-    sendSummaryReply: boolean
+    sendSummaryReply: boolean,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
   ): Promise<AIResult | null> {
     this.store.setProcessingMode(message.messageId, mode);
     // If message contains URLs, fetch article content first
@@ -1504,7 +1604,7 @@ export class Router {
       textForAI = `${textForAI}\n\n--- 以下为链接内容 ---\n\n${fetchedContent}`;
     }
 
-    const contentPrivacy = evaluateContentPrivacy(textForAI, this.privacy);
+    const contentPrivacy = evaluateContentPrivacy(textForAI, this.getPrivacy(runtimeSnapshot));
     if (contentPrivacy.action === 'skip') {
       if (sendSummaryReply) {
         await this.replyClient.replyText(message.messageId, `Skipped by privacy rule: ${contentPrivacy.reason}`);
@@ -1551,8 +1651,23 @@ export class Router {
     return aiResult;
   }
 
-  private redactLog(text: string): string {
-    return redactForLog(text, this.privacy);
+  private redactLog(text: string, runtimeSnapshot: RuntimeConfigSnapshot | null = null): string {
+    return redactForLog(text, this.getPrivacy(runtimeSnapshot));
+  }
+
+  private getPrivacy(runtimeSnapshot: RuntimeConfigSnapshot | null): PrivacyConfig {
+    return runtimeSnapshot
+      ? runtimeSnapshot.config.privacy as PrivacyConfig
+      : this.privacy;
+  }
+
+  private getBotMentionConfig(runtimeSnapshot: RuntimeConfigSnapshot | null): BotMentionConfig {
+    return runtimeSnapshot
+      ? {
+          ids: [...runtimeSnapshot.config.feishu.botMentionIds],
+          names: [...runtimeSnapshot.config.feishu.botMentionNames],
+        }
+      : this.botMentionConfig;
   }
 
   private async fetchAndStoreUrls(messageId: string, urls: string[]): Promise<string> {
@@ -1567,15 +1682,22 @@ export class Router {
     return formatFetchedUrlDetails(details);
   }
 
-  private async extractAndStoreAttachmentText(messageId: string, resourceKey: string): Promise<void> {
-    if (!this.attachmentExtractor) return;
+  private async extractAndStoreAttachmentText(
+    messageId: string,
+    resourceKey: string,
+    runtimeSnapshot: RuntimeConfigSnapshot | null
+  ): Promise<void> {
+    const extractor = runtimeSnapshot && this.attachmentExtractorFactory
+      ? this.attachmentExtractorFactory(runtimeSnapshot.config.attachments)
+      : this.attachmentExtractor;
+    if (!extractor) return;
     const attachment = this.store
       .getAttachmentsForMessage(messageId)
       .find((row) => row.resourceKey === resourceKey);
     if (!attachment || attachment.downloadStatus !== 'downloaded') return;
 
     try {
-      const result = await this.attachmentExtractor.extract(attachment);
+      const result = await extractor.extract(attachment);
       this.store.updateAttachmentExtraction(messageId, resourceKey, {
         status: result.status,
         text: result.status === 'extracted' ? result.text : null,

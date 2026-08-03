@@ -12,13 +12,15 @@ import type {
 } from './types.js';
 
 export const CONFIG_DIR = path.join(os.homedir(), '.doujie');
-const CONFIG_FILE = path.join(CONFIG_DIR, 'config.yaml');
+export const CONFIG_FILE = path.join(CONFIG_DIR, 'config.yaml');
 const DEFAULT_DB_PATH = path.join(CONFIG_DIR, 'data.db');
 const DEFAULT_BACKUP_DIR = path.join(CONFIG_DIR, 'backups');
 const DEFAULT_EXPORT_DIR = path.join(CONFIG_DIR, 'exports');
 const DEFAULT_ATTACHMENT_CACHE_DIR = path.join(CONFIG_DIR, 'attachments');
 const DEFAULT_CONTROL_SESSION_DIR = path.join(CONFIG_DIR, 'sessions');
 export const DEFAULT_QUOTED_MESSAGE_MAX_CHARS = 20000;
+export const DEFAULT_QUOTED_MESSAGE_MAX_DEPTH = 1;
+export const MAX_QUOTED_MESSAGE_DEPTH = 20;
 
 export class ConfigError extends Error {
   constructor(message: string) {
@@ -34,24 +36,68 @@ function expandTilde(p: string): string {
   return p;
 }
 
-function ensureConfigDir(): void {
-  if (!fs.existsSync(CONFIG_DIR)) {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+function ensureConfigDir(configFile = CONFIG_FILE): void {
+  const directory = path.dirname(configFile);
+  if (!fs.existsSync(directory)) {
+    fs.mkdirSync(directory, { recursive: true });
   }
 }
 
-function loadYamlConfig(): Record<string, unknown> {
-  ensureConfigDir();
-  if (!fs.existsSync(CONFIG_FILE)) {
+function loadYamlConfig(requireFile = false, configFile = CONFIG_FILE): Record<string, unknown> {
+  ensureConfigDir(configFile);
+  if (!fs.existsSync(configFile)) {
+    if (requireFile) throw new ConfigError('config file is temporarily unavailable');
     return {};
   }
-  const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
+  const raw = fs.readFileSync(configFile, 'utf-8');
+  if (requireFile && raw.trim().length === 0) {
+    throw new ConfigError('config file is empty or incomplete');
+  }
   const parsed = yaml.load(raw);
-  if (parsed === undefined || parsed === null) return {};
+  if (parsed === undefined || parsed === null) {
+    if (requireFile) throw new ConfigError('config file is empty or incomplete');
+    return {};
+  }
   if (typeof parsed === 'object' && !Array.isArray(parsed)) {
-    return parsed as Record<string, unknown>;
+    const config = parsed as Record<string, unknown>;
+    if (requireFile) validateRequiredFileShape(config);
+    return config;
   }
   throw new ConfigError('config root must be an object');
+}
+
+function validateRequiredFileShape(config: Record<string, unknown>): void {
+  if (Object.keys(config).length === 0) {
+    throw new ConfigError('config file is empty or incomplete');
+  }
+  rejectExplicitNulls(config, 'config');
+  const objectNodes = ['features', 'output', 'codex', 'feishu', 'storage', 'privacy', 'attachments'];
+  for (const key of objectNodes) {
+    if (Object.hasOwn(config, key)) validateObject(config[key], key);
+  }
+  validatePresentObjectNode(config.features, 'quoted_message', 'features.quoted_message');
+  validatePresentObjectNode(config.feishu, 'edit_polling', 'feishu.edit_polling');
+  validatePresentObjectNode(config.privacy, 'private', 'privacy.private');
+}
+
+function rejectExplicitNulls(value: unknown, label: string): void {
+  if (value === null) {
+    throw new ConfigError(`${label} must not be null during automatic reload`);
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => rejectExplicitNulls(item, `${label}[${index}]`));
+    return;
+  }
+  if (typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    rejectExplicitNulls(child, `${label}.${key}`);
+  }
+}
+
+function validatePresentObjectNode(parent: unknown, key: string, label: string): void {
+  if (typeof parent !== 'object' || parent === null || Array.isArray(parent)) return;
+  const record = parent as Record<string, unknown>;
+  if (Object.hasOwn(record, key)) validateObject(record[key], label);
 }
 
 function getNestedValue(
@@ -68,9 +114,13 @@ function getNestedValue(
   return current;
 }
 
-export function loadConfig(): AppConfig {
-  const yamlConfig = loadYamlConfig();
-  return buildConfig(yamlConfig, process.env);
+export function loadConfig(options: {
+  requireFile?: boolean;
+  configFile?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): AppConfig {
+  const yamlConfig = loadYamlConfig(options.requireFile ?? false, options.configFile ?? CONFIG_FILE);
+  return buildConfig(yamlConfig, options.env ?? process.env);
 }
 
 export function buildConfig(
@@ -221,12 +271,19 @@ function validatePrivacyGroups(value: unknown) {
 
 function validateQuotedMessageConfig(value: unknown, label: string): QuotedMessageFeatureConfig {
   if (value === undefined || value === null) {
-    return { enabled: false, maxChars: DEFAULT_QUOTED_MESSAGE_MAX_CHARS };
+    return {
+      enabled: false,
+      maxChars: DEFAULT_QUOTED_MESSAGE_MAX_CHARS,
+      maxDepth: DEFAULT_QUOTED_MESSAGE_MAX_DEPTH,
+      includeAttachments: false,
+    };
   }
   const record = validateObject(value, label);
   return {
     enabled: validateOptionalBoolean(record.enabled, `${label}.enabled`) ?? false,
     maxChars: validateOptionalPositiveInteger(record.max_chars, `${label}.max_chars`) ?? DEFAULT_QUOTED_MESSAGE_MAX_CHARS,
+    maxDepth: validateQuotedMessageDepth(record.max_depth, `${label}.max_depth`) ?? DEFAULT_QUOTED_MESSAGE_MAX_DEPTH,
+    includeAttachments: validateOptionalBoolean(record.include_attachments, `${label}.include_attachments`) ?? false,
   };
 }
 
@@ -247,13 +304,28 @@ function validateFeatureOverrides(value: unknown, label: string): FeatureOverrid
   const quoted = validateObject(record.quoted_message, `${label}.quoted_message`);
   const enabled = validateOptionalBoolean(quoted.enabled, `${label}.quoted_message.enabled`);
   const maxChars = validateOptionalPositiveInteger(quoted.max_chars, `${label}.quoted_message.max_chars`);
-  if (enabled === undefined && maxChars === undefined) return undefined;
+  const maxDepth = validateQuotedMessageDepth(quoted.max_depth, `${label}.quoted_message.max_depth`);
+  const includeAttachments = validateOptionalBoolean(
+    quoted.include_attachments,
+    `${label}.quoted_message.include_attachments`
+  );
+  if (enabled === undefined && maxChars === undefined && maxDepth === undefined && includeAttachments === undefined) return undefined;
   return {
     quotedMessage: {
       ...(enabled === undefined ? {} : { enabled }),
       ...(maxChars === undefined ? {} : { maxChars }),
+      ...(maxDepth === undefined ? {} : { maxDepth }),
+      ...(includeAttachments === undefined ? {} : { includeAttachments }),
     },
   };
+}
+
+function validateQuotedMessageDepth(value: unknown, label: string): number | undefined {
+  const depth = validateOptionalPositiveInteger(value, label);
+  if (depth !== undefined && depth > MAX_QUOTED_MESSAGE_DEPTH) {
+    throw new ConfigError(`${label} must be at most ${MAX_QUOTED_MESSAGE_DEPTH}`);
+  }
+  return depth;
 }
 
 function validateObject(value: unknown, label: string): Record<string, unknown> {

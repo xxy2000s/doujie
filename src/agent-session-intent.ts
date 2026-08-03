@@ -6,6 +6,7 @@ import {
   DEFAULT_CODEX_AGENT_SANDBOX,
   DEFAULT_CODEX_AGENT_SKIP_GIT_REPO_CHECK,
   type CreateAgentSessionDraft,
+  type HeadlessAgentRuntimeDefaults,
   type HeadlessAgentRunnerLike,
 } from './headless-agent-runner.js';
 import type { MessageContent } from './types.js';
@@ -25,6 +26,7 @@ export type PendingAgentAction = {
   createdAt: string;
   expiresAt: string;
   draft: AgentSessionDraft;
+  codexDefaults?: HeadlessAgentRuntimeDefaults;
 };
 
 export type PendingAgentActionFile = {
@@ -110,7 +112,10 @@ export class AgentSessionIntentController {
     private readonly clock: () => Date = () => new Date()
   ) {}
 
-  async handle(message: MessageContent): Promise<AgentSessionIntentResult | null> {
+  async handle(
+    message: MessageContent,
+    defaults?: HeadlessAgentRuntimeDefaults
+  ): Promise<AgentSessionIntentResult | null> {
     const normalized = normalizeText(message.text);
     if (isConfirmText(normalized)) {
       const action = this.pendingStore.consume(message.chatId, message.senderId);
@@ -118,7 +123,7 @@ export class AgentSessionIntentController {
       const record = await this.runner.create({
         ...action.draft,
         createdBy: { chatId: message.chatId, senderId: message.senderId },
-      });
+      }, action.codexDefaults ?? defaults);
       return {
         text: [
           '已创建并登记 Agent session。',
@@ -149,6 +154,9 @@ export class AgentSessionIntentController {
       createdAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + PENDING_TTL_MS).toISOString(),
       draft: parsed.draft,
+      ...(parsed.draft.provider === 'codex'
+        ? { codexDefaults: captureCodexDefaults(parsed.draft, defaults) }
+        : {}),
     };
     this.pendingStore.put(action);
     return { text: formatConfirmation(action) };
@@ -232,6 +240,7 @@ function extractPrompt(text: string): string {
 }
 
 function formatConfirmation(action: PendingAgentAction): string {
+  const codexDefaults = action.codexDefaults;
   return [
     '请确认是否创建新的 Agent session：',
     '',
@@ -239,10 +248,26 @@ function formatConfirmation(action: PendingAgentAction): string {
     `**Alias:** \`${action.draft.alias}\``,
     `**CWD:** \`${action.draft.cwd}\``,
     `**Prompt:** ${action.draft.prompt}`,
-    `**Default Permission:** ${action.draft.provider === 'codex' ? DEFAULT_CODEX_AGENT_SANDBOX : 'default'}`,
+    ...(action.draft.provider === 'codex' ? [
+      `**Model:** ${codexDefaults?.model || '(CLI default)'}`,
+      `**Sandbox:** ${codexDefaults?.sandbox ?? DEFAULT_CODEX_AGENT_SANDBOX}`,
+      `**Skip Git Repo Check:** ${codexDefaults?.skipGitRepoCheck ?? DEFAULT_CODEX_AGENT_SKIP_GIT_REPO_CHECK}`,
+    ] : [`**Permission Mode:** ${action.draft.permissionMode ?? 'default'}`]),
     '',
     '回复「确认」执行，回复「取消」放弃。10 分钟后自动过期。',
   ].join('\n');
+}
+
+function captureCodexDefaults(
+  draft: AgentSessionDraft,
+  defaults?: HeadlessAgentRuntimeDefaults
+): HeadlessAgentRuntimeDefaults {
+  return {
+    model: draft.model ?? defaults?.model ?? '',
+    workdir: draft.cwd,
+    sandbox: defaults?.sandbox ?? draft.sandbox ?? DEFAULT_CODEX_AGENT_SANDBOX,
+    skipGitRepoCheck: defaults?.skipGitRepoCheck ?? draft.skipGitRepoCheck ?? DEFAULT_CODEX_AGENT_SKIP_GIT_REPO_CHECK,
+  };
 }
 
 function formatMissingDraft(missing: string[], draft: Partial<AgentSessionDraft>): string {

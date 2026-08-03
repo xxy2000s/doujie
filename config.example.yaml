@@ -1,0 +1,68 @@
+# Mock-only Doujie configuration. Never commit real IDs, credentials, or paths.
+output:
+  transport: card
+
+codex:
+  model: mock-model
+  workdir: /srv/mock-doujie
+  sandbox: read-only
+  skip_git_repo_check: false
+  control_session_dir: ~/.doujie/sessions
+
+feishu:
+  as: bot
+  chat_ids:
+    - oc_mock_listener_chat
+  bot_mention_ids:
+    - cli_mock_bot
+  bot_mention_names:
+    - MockDoujie
+  edit_polling:
+    enabled: false
+    chat_ids: []
+    as: user
+    interval_ms: 10000
+    page_size: 20
+
+storage:
+  db_path: ~/.doujie/data.db
+  backup_dir: ~/.doujie/backups
+  export_dir: ~/.doujie/exports
+  attachment_cache_dir: ~/.doujie/attachments
+
+features:
+  quoted_message:
+    enabled: true
+    max_chars: 20000
+    max_depth: 3
+    include_attachments: false
+
+privacy:
+  allow_chat_ids:
+    - oc_mock_listener_chat
+  deny_chat_ids: []
+  allow_user_ids:
+    - ou_mock_operator
+  deny_user_ids: []
+  admin_user_ids:
+    - ou_mock_operator
+  private:
+    allow_user_ids:
+      - ou_mock_operator
+  groups:
+    - chat_id: oc_mock_listener_chat
+      allow_user_ids:
+        - ou_mock_operator
+      allow_agent_user_ids:
+        - ou_mock_operator
+      features:
+        quoted_message:
+          max_depth: 2
+          include_attachments: false
+  skip_patterns:
+    - name: mock_private_marker
+      pattern: MOCK_PRIVATE
+  redact_patterns:
+    - name: mock_token
+      pattern: MOCK_TOKEN_[A-Z0-9]+
+      replacement: "[REDACTED]"

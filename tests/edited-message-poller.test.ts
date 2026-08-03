@@ -1,13 +1,57 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import type { ChildProcess } from 'node:child_process';
 import {
   EditedMessagePoller,
   buildChatMessagesListArgs,
   listMessageToEditedEvent,
   parseChatMessagesListOutput,
+  spawnLarkCli,
   Utf8Accumulator,
   type FeishuListMessage,
 } from '../src/edited-message-poller.js';
+
+function fakeChildProcess(): { process: ChildProcess; killed: string[] } {
+  const emitter = new EventEmitter() as EventEmitter & Partial<ChildProcess>;
+  const killed: string[] = [];
+  emitter.stdout = new PassThrough();
+  emitter.stderr = new PassThrough();
+  emitter.kill = ((signal?: NodeJS.Signals | number) => {
+    killed.push(String(signal));
+    return true;
+  }) as ChildProcess['kill'];
+  return { process: emitter as ChildProcess, killed };
+}
+
+test('spawnLarkCli accepts exact byte limits across split UTF-8 chunks', async () => {
+  const child = fakeChildProcess();
+  const spawnProcess = (() => child.process) as unknown as typeof import('node:child_process').spawn;
+  const promise = spawnLarkCli([], { spawnProcess, stdoutMaxBytes: 3, stderrMaxBytes: 3, timeoutMs: 1000 });
+  const bytes = Buffer.from('中');
+  child.process.stdout?.emit('data', bytes.subarray(0, 1));
+  child.process.stdout?.emit('data', bytes.subarray(1));
+  child.process.stderr?.emit('data', Buffer.from('中'));
+  child.process.emit('close', 0);
+  assert.equal(await promise, '中');
+  assert.deepEqual(child.killed, []);
+});
+
+test('spawnLarkCli terminates with sanitized errors on stdout and stderr overflow', async () => {
+  for (const stream of ['stdout', 'stderr'] as const) {
+    const child = fakeChildProcess();
+    const spawnProcess = (() => child.process) as unknown as typeof import('node:child_process').spawn;
+    const promise = spawnLarkCli([], { spawnProcess, stdoutMaxBytes: 3, stderrMaxBytes: 3, timeoutMs: 1000 });
+    const bytes = Buffer.from('中文');
+    child.process[stream]?.emit('data', bytes.subarray(0, 2));
+    child.process[stream]?.emit('data', bytes.subarray(2, 4));
+    await assert.rejects(promise, new RegExp(
+      stream === 'stdout' ? 'chat message output exceeded limit' : 'chat message error output exceeded limit'
+    ));
+    assert.deepEqual(child.killed, ['SIGTERM']);
+  }
+});
 
 test('Utf8Accumulator preserves multi-byte code points across every byte boundary', () => {
   const input = JSON.stringify({ text: 'A¢中😊𠮷Z' });

@@ -30,8 +30,15 @@ type ListMessages = (chatId: string) => Promise<FeishuListMessage[]>;
 export class Utf8Accumulator {
   private decoder = new StringDecoder('utf8');
   private value = '';
+  private bytes = 0;
+
+  constructor(private readonly maxBytes = Number.POSITIVE_INFINITY) {}
 
   append(chunk: Buffer): void {
+    if (this.bytes + chunk.length > this.maxBytes) {
+      throw new Error('output exceeded byte limit');
+    }
+    this.bytes += chunk.length;
     this.value += this.decoder.write(chunk);
   }
 
@@ -40,6 +47,9 @@ export class Utf8Accumulator {
     return this.value;
   }
 }
+
+export const LARK_LIST_STDOUT_MAX_BYTES = 4 * 1024 * 1024;
+export const LARK_LIST_STDERR_MAX_BYTES = 64 * 1024;
 
 export type EditedMessagePollerOptions = {
   feishuAs: FeishuIdentity;
@@ -131,6 +141,7 @@ export class EditedMessagePoller {
   private options: Required<EditedMessagePollerOptions>;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private activePoll: Promise<void> | null = null;
   private initialized = false;
   private seenVersionKeys = new Set<string>();
 
@@ -157,17 +168,27 @@ export class EditedMessagePoller {
     console.log(
       `[edit-poller] Starting edited-message polling for ${this.chatIds.length} chat(s) every ${this.options.intervalMs}ms as ${this.options.feishuAs}.`
     );
-    void this.pollOnce();
+    void this.runPollOnce();
     this.timer = setInterval(() => {
-      void this.pollOnce();
+      void this.runPollOnce();
     }, this.options.intervalMs);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
+    await this.activePoll;
+  }
+
+  private runPollOnce(): Promise<void> {
+    if (this.activePoll) return this.activePoll;
+    const poll = this.pollOnce().finally(() => {
+      if (this.activePoll === poll) this.activePoll = null;
+    });
+    this.activePoll = poll;
+    return poll;
   }
 
   async pollOnce(): Promise<void> {
@@ -209,27 +230,50 @@ async function listChatMessages(
   return parseChatMessagesListOutput(stdout);
 }
 
-function spawnLarkCli(args: string[]): Promise<string> {
+export type SpawnLarkCliOptions = {
+  spawnProcess?: typeof spawn;
+  stdoutMaxBytes?: number;
+  stderrMaxBytes?: number;
+  timeoutMs?: number;
+};
+
+export function spawnLarkCli(args: string[], options: SpawnLarkCliOptions = {}): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn('lark-cli', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    const stdout = new Utf8Accumulator();
-    const stderr = new Utf8Accumulator();
+    const proc = (options.spawnProcess ?? spawn)('lark-cli', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdout = new Utf8Accumulator(options.stdoutMaxBytes ?? LARK_LIST_STDOUT_MAX_BYTES);
+    const stderr = new Utf8Accumulator(options.stderrMaxBytes ?? LARK_LIST_STDERR_MAX_BYTES);
+    let settled = false;
+    const fail = (error: Error, kill = false): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (kill) proc.kill('SIGTERM');
+      reject(error);
+    };
     const timeout = setTimeout(() => {
-      proc.kill('SIGTERM');
-      reject(new Error('lark-cli chat message list timed out'));
-    }, 20000);
+      fail(new Error('lark-cli chat message list timed out'), true);
+    }, options.timeoutMs ?? 20000);
 
     proc.stdout?.on('data', (chunk: Buffer) => {
-      stdout.append(chunk);
+      try {
+        stdout.append(chunk);
+      } catch {
+        fail(new Error('lark-cli chat message output exceeded limit'), true);
+      }
     });
     proc.stderr?.on('data', (chunk: Buffer) => {
-      stderr.append(chunk);
+      try {
+        stderr.append(chunk);
+      } catch {
+        fail(new Error('lark-cli chat message error output exceeded limit'), true);
+      }
     });
     proc.on('error', (err) => {
-      clearTimeout(timeout);
-      reject(err);
+      fail(err);
     });
     proc.on('close', (code) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timeout);
       if (code === 0) {
         resolve(stdout.finish());

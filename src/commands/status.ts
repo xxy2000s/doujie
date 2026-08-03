@@ -2,6 +2,7 @@ import type { CommandHandler, MessageContent } from '../types.js';
 import type { Store } from '../store.js';
 import type { CommandRuntime } from './index.js';
 import { commandSection, field, joinBlocks } from './format.js';
+import { safeDisplayPath } from '../path-display.js';
 
 function formatDuration(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -30,6 +31,14 @@ export function createStatusHandler(
     const lastEvent = listener.lastEventAt
       ? new Date(listener.lastEventAt).toLocaleString()
       : 'none';
+    const config = runtime.getRuntimeConfigStatus?.();
+    const lastReloadFailure = config?.lastReloadFailure
+      ? `${new Date(config.lastReloadFailure.attemptedAt).toLocaleString()} ${
+          config.lastReloadFailure.error === 'component reconciliation failed'
+            ? 'component reconciliation failed'
+            : 'configuration validation failed'
+        }`
+      : 'none';
 
     return joinBlocks([
       'Doujie Status',
@@ -44,9 +53,17 @@ export function createStatusHandler(
         field('Jobs', countText),
         field('Modes', modeText),
       ]),
+      commandSection('配置', config ? [
+        field('Version', config.version),
+        field('Loaded at', new Date(config.loadedAt).toLocaleString()),
+        field('Source', config.source),
+        field('Watcher', config.watcherState),
+        field('Lifecycle', config.lastLifecycleActions.join(', ') || 'none'),
+        field('Last reload failure', lastReloadFailure),
+      ] : [field('Runtime config', 'unavailable')]),
       commandSection('存储', [
         field('Search', `fts=${searchDiagnostics.fts_available ?? 'unknown'} backend=${searchDiagnostics.last_backend ?? 'none'}`),
-        field('DB', `\`${runtime.dbPath}\``),
+        field('DB', `\`${safeDisplayPath(runtime.dbPath)}\``),
       ]),
     ]);
   };

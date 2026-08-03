@@ -34,6 +34,19 @@ function createRuntime(dbPath: string): CommandRuntime {
       lastEventAt: 123456,
       restartCount: 2,
     }),
+    getRuntimeConfigStatus: () => ({
+      version: 4,
+      loadedAt: 120000,
+      source: 'manual',
+      watcherState: 'disabled',
+      lastLifecycleActions: [],
+      lastReloadFailure: null,
+    }),
+    getEffectiveFeatures: () => ({
+      quotedMessage: {
+        enabled: true, maxChars: 2000, maxDepth: 3, includeAttachments: true, scope: 'group_override',
+      },
+    }),
   };
 }
 
@@ -62,6 +75,82 @@ test('status command reports runtime and job counts', async () => {
     assert.match(result ?? '', /replied:1/);
     assert.match(result ?? '', /\*\*Modes:\*\* default:1/);
     assert.match(result ?? '', /\*\*Search:\*\* fts=/);
+    assert.match(result ?? '', /\*\*Version:\*\* 4/);
+    assert.match(result ?? '', /\*\*Source:\*\* manual/);
+    assert.match(result ?? '', /\*\*Watcher:\*\* disabled/);
+    assert.match(result ?? '', /\*\*Lifecycle:\*\* none/);
+    assert.doesNotMatch(result ?? '', /chat|sender/);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('status command redacts the local home directory from displayed paths and reload failures', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-status-redaction');
+  const store = new Store(dbPath);
+  const homeDbPath = `${process.env.HOME ?? '/Users/private'}/.doujie/data.db`;
+  const runtime: CommandRuntime = {
+    ...createRuntime(homeDbPath),
+    getRuntimeConfigStatus: () => ({
+      version: 2,
+      loadedAt: 100,
+      source: 'startup',
+      watcherState: 'disabled',
+      lastLifecycleActions: ['poller:error'],
+      lastReloadFailure: {
+        attemptedAt: 200,
+        source: 'manual',
+        ok: false,
+        previousVersion: 2,
+        version: 2,
+        changedFields: [],
+        restartRequired: [],
+        lifecycleActions: [],
+        error: 'token=should-never-render /Users/private/config.yaml',
+      },
+    }),
+  };
+  try {
+    const result = await createCommandRegistry(store, runtime).get('status')?.('', dummyMessage);
+    assert.match(result ?? '', /`~\/.doujie\/data\.db`/);
+    assert.match(result ?? '', /configuration validation failed/);
+    assert.doesNotMatch(result ?? '', /should-never-render|\/Users\/private/);
+    assert.doesNotMatch(result ?? '', new RegExp((process.env.HOME ?? '/Users/private').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('status command neutralizes absolute paths outside the current home', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-status-external-path');
+  const store = new Store(dbPath);
+  try {
+    const runtime = createRuntime('/home/doujie/.doujie/data.db');
+    const result = await createCommandRegistry(store, runtime).get('status')?.('', dummyMessage);
+    assert.match(result ?? '', /`<external>\/data\.db`/);
+    assert.doesNotMatch(result ?? '', /\/home\/doujie|doujie\/\.doujie/);
+  } finally {
+    store.close();
+    removeTempDir(dir);
+  }
+});
+
+test('features command reports only effective values for the current chat scope', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-features-command');
+  const store = new Store(dbPath);
+  try {
+    const result = await createCommandRegistry(store, createRuntime(dbPath))
+      .get('features')?.('', { ...dummyMessage, chatId: 'oc_sensitive_chat' });
+
+    assert.match(result ?? '', /运行时功能/);
+    assert.match(result ?? '', /\*\*Enabled:\*\* true/);
+    assert.match(result ?? '', /\*\*Max chars:\*\* 2000/);
+    assert.match(result ?? '', /\*\*Max depth:\*\* 3/);
+    assert.match(result ?? '', /\*\*Include attachments:\*\* true/);
+    assert.match(result ?? '', /\*\*Scope:\*\* group_override/);
+    assert.doesNotMatch(result ?? '', /oc_sensitive_chat|sender|\/Users\//);
   } finally {
     store.close();
     removeTempDir(dir);
@@ -100,7 +189,9 @@ test('reload command formats applied, restart-required, and sanitized failure st
         previousVersion: 2,
         version: 3,
         changed: true,
+        changedFields: ['features.quoted_message.enabled'],
         restartRequired: ['codex.model', 'privacy.groups'],
+        lifecycleActions: ['poller:no_change'],
       }),
     };
     const success = await createCommandRegistry(store, successRuntime).get('reload')?.('', dummyMessage);
@@ -108,6 +199,8 @@ test('reload command formats applied, restart-required, and sanitized failure st
     assert.match(success ?? '', /2 → 3/);
     assert.match(success ?? '', /codex\.model/);
     assert.match(success ?? '', /privacy\.groups/);
+    assert.match(success ?? '', /features\.quoted_message\.enabled/);
+    assert.match(success ?? '', /poller:no_change/);
 
     const noChangeRuntime = {
       ...createRuntime(dbPath),
@@ -116,7 +209,9 @@ test('reload command formats applied, restart-required, and sanitized failure st
         previousVersion: 3,
         version: 3,
         changed: false,
+        changedFields: [],
         restartRequired: [],
+        lifecycleActions: [],
       }),
     };
     const noChange = await createCommandRegistry(store, noChangeRuntime).get('reload')?.('', dummyMessage);
@@ -130,7 +225,9 @@ test('reload command formats applied, restart-required, and sanitized failure st
         previousVersion: 3,
         version: 3,
         changed: false,
+        changedFields: [],
         restartRequired: [],
+        lifecycleActions: [],
         error: 'secret: real-config-value',
       }),
     };
@@ -139,6 +236,25 @@ test('reload command formats applied, restart-required, and sanitized failure st
     assert.match(failure ?? '', /3（未变化）/);
     assert.match(failure ?? '', /configuration validation failed/);
     assert.doesNotMatch(failure ?? '', /real-config-value/);
+
+    const reconciliationRuntime = {
+      ...createRuntime(dbPath),
+      reloadConfig: async () => ({
+        ok: false as const,
+        previousVersion: 3,
+        version: 4,
+        changed: true,
+        changedFields: ['feishu.edit_polling.enabled'],
+        restartRequired: [],
+        lifecycleActions: ['poller:error' as const],
+        error: 'component reconciliation failed',
+      }),
+    };
+    const reconciliation = await createCommandRegistry(store, reconciliationRuntime).get('reload')?.('', dummyMessage);
+    assert.match(reconciliation ?? '', /配置已应用，组件协调失败/);
+    assert.match(reconciliation ?? '', /3 → 4/);
+    assert.match(reconciliation ?? '', /poller:error/);
+    assert.doesNotMatch(reconciliation ?? '', /real-config-value/);
   } finally {
     store.close(); removeTempDir(dir);
   }

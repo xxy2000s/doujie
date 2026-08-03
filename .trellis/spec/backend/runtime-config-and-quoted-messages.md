@@ -27,7 +27,15 @@ type ConfigReloadResult = {
 };
 
 interface QuotedMessageProvider {
-  fetch(messageId: string): Promise<{ messageId: string; text: string } | null>;
+  fetch(messageId: string): Promise<{
+    messageId: string;
+    text: string;
+    parentId?: string;
+    rootId?: string;
+    messageType: string;
+    senderType?: string;
+    attachments: Array<{ name: string; type: string }>;
+  } | null>;
   resolveRelationship?(messageId: string): Promise<{ parentId?: string; rootId?: string } | null>;
 }
 ```
@@ -37,10 +45,12 @@ interface QuotedMessageProvider {
 
 ### 3. Contracts
 
-- YAML uses `features.quoted_message.{enabled,max_chars}` and optional `privacy.groups[].features.quoted_message` overrides.
-- Precedence is group override, then global feature value, then the code default. The feature defaults disabled and `max_chars` must be a positive integer.
+- YAML uses `features.quoted_message.{enabled,max_chars,max_depth,include_attachments}` and optional `privacy.groups[].features.quoted_message` overrides.
+- Precedence is group override, then global feature value, then the code default. Defaults are disabled, one direct parent, no attachment metadata, and a positive total quote-content budget. `max_depth` is bounded to 20.
 - `Router.handleEvent` captures one snapshot before privacy/authorization work and passes that same object through retry/default routing; reloads affect only later captures.
 - Reload validates a complete candidate, copies only global features and feature overrides for existing applied group rules, and reports restart-bound changes as field paths without values or group IDs.
+- Automatic watcher reloads apply an additional safety gate before snapshot installation. They reject authorization-set changes; removal of deny, skip, or redact protections; broader chat access; any bot mention ID/name matcher-set change; clearing a configured Codex model; any actual Codex workdir location change; a more permissive Codex sandbox; and enabling skip-git checks bypass. Workdir equality uses resolved path segments and real paths for existing locations, allowing equivalent spellings or symlinks to the same target. Rejection preserves snapshot identity and version, returns a fixed validation error, and audits only field paths and fixed lifecycle enums, never configured values or IDs.
+- An authenticated administrator may intentionally apply those changes with `/reload`. This conservative watcher policy trades some automatic convenience for protection against syntactically valid partial or atomic-replacement YAML; manual reload is the explicit approval boundary for removals and permission downgrades.
 - Raw Feishu event/list-message contracts accept optional `parent_id`, `reply_to`, and `root_id`. The live `+chat-messages-list` reply shape uses `reply_to`; normalize the direct parent as `parent_id` first, then `reply_to`, and use `root_id` only when neither direct-parent field is present.
 - A live receive event may omit every reply relationship even though the list/mget representation already exposes `reply_to`. When quoting is enabled and an authorized default-Codex request has no relationship, resolve that request message once through the same read-only mget boundary before reading its parent.
 - Persist a resolver-discovered relationship into the message's already-sanitized `raw_event` before recording its effective generation. Retries then reuse the direct parent without depending on a later poller pass; if persistence fails, leave the generation unrecorded so poller enrichment can repair it safely.
@@ -49,9 +59,10 @@ interface QuotedMessageProvider {
 - Persist relationship-only enrichment before returning even when quoting is disabled and relationships are intentionally excluded from the content hash. “No reprocessing” never means “drop the richer raw event.”
 - Combine `update_time` with the normalized effective-content/mention/relationship hash for both Router event versions and poller versions. Equal timestamps never mask a text, mention, direct-parent, or root change.
 - When quoting is disabled, reply relationships do not affect the effective content-generation hash; the poller must not replay a receive-event request solely because it later exposes `reply_to`.
-- Quote lookup happens only for default Codex chat, after identity, group-mention, and Agent permission gates. It never fetches URLs, resources, reactions, ancestors, or multiple messages.
-- The current `lark-cli +messages-mget` shape returns rendered text as a non-empty plain `content` string. Accept that directly, while also unwrapping legacy/alternate JSON strings shaped as `{ "text": "..." }`.
-- Bound quoted text by Unicode code points, prefix every quote line with `> ` so content cannot forge the closing delimiter, then apply combined-content privacy skip/redaction before Codex invocation.
+- Quote lookup happens only for default Codex chat, after identity, group-mention, and Agent permission gates. It serially follows direct parents only up to `max_depth`, with visited-ID cycle/duplicate detection.
+- Normalize only known text, rendered post, and rendered interactive-card fields. Bot messages are allowed. Unknown JSON fields are discarded rather than stringified.
+- Attachment handling is metadata-only and opt-in: retain bounded allowlisted `name` and `type`, never download, and never retain keys, URLs, tokens, or IDs.
+- Format the chain oldest-to-newest under one Unicode code-point content budget. Prefix every externally sourced line with `> ` so content cannot forge the closing delimiter, then apply combined-content privacy skip/redaction before Codex invocation.
 - The quote subprocess uses argv spawning, a timeout, a bounded stdout buffer, discarded stderr, and sanitized errors.
 
 ### 4. Validation & Error Matrix
@@ -60,14 +71,15 @@ interface QuotedMessageProvider {
 |---|---|
 | Invalid YAML, root, type, or non-positive limit | Reload fails; snapshot identity and version stay unchanged; reply is generic |
 | Valid feature-only change | Atomically install a deeply frozen snapshot with `version + 1` |
+| Watcher candidate weakens a protected setting | Reject with a fixed error; preserve snapshot/version; require administrator `/reload` |
 | Valid restart-only change | Keep snapshot/version; return sanitized `restart_required` paths |
 | Feature disabled or no relationship ID | Do not call the quote provider |
-| Enabled receive event omits relationship | Resolve the current message relationship read-only, then fetch at most one direct parent |
+| Enabled receive event omits relationship | Resolve the current message relationship read-only, then traverse bounded direct parents |
 | Poller later adds the same missing relationship | Store/dedupe the enrichment; do not run or interrupt Codex again |
 | Poller adds relationship and changes text/type/mention | Persist and process as a new generation |
 | Equal `update_time`, different effective content or relationship | Accept as a distinct event/version |
 | Feature disabled, relationship-only enrichment | Persist parent/reply fields; do not create a new job or Codex turn |
-| Missing, deleted, non-text, empty, or non-string message content | Return `null`; process the current request only |
+| Missing, deleted, malformed, unavailable ancestor, or no displayable configured content | Discard quote context; process the current request only |
 | Unauthorized, malformed, nonzero, timed-out, or oversized CLI result | Log one generic degradation warning; process the current request only |
 | Combined prompt matches privacy skip/redaction | Skip Codex or send only the redacted combined prompt |
 
@@ -83,8 +95,8 @@ interface QuotedMessageProvider {
 - Runtime manager: deep immutability, version monotonicity, in-flight stability, invalid rollback, feature-only apply, restart-only/no-change, sanitized restart paths.
 - Command/Router: admin-before-reload ordering, mention/Agent gates before lookup, next-request reload behavior, privacy skip/redact, current-only fallback, `parent_id > reply_to > root_id` resolution, receive-event relationship resolution, resolver-first and poller-first race suppression, resolved-relationship retry restoration, disabled-state suppression, and genuine relationship-only edits.
 - Poller: live `reply_to` list-message normalization, raw-field preservation, `update_time + effective hash` versioning, equal-timestamp text/known-parent changes, and deduplication of unchanged effective parents.
-- Provider: exact argv, exact-ID match, rendered plain text plus JSON `{text}` shapes, deleted/non-text/empty/malformed-envelope cases, real owned-child timeout, stdout cap, nonzero exit without stderr leakage.
-- Prompt: one untrusted section, Unicode-safe truncation, one unprefixed closing delimiter even when quoted content contains delimiter text.
+- Provider/resolver: exact argv/ID, safe text/post/card fields, bot sender, bounded attachment metadata, malformed/unknown content, depth, cycles, duplicate IDs, unavailable ancestors, timeout, stdout cap, and sanitized nonzero exit.
+- Prompt: oldest-to-newest levels, one total Unicode-safe content budget, optional attachment metadata, and one unprefixed closing delimiter even when quoted content contains delimiter text.
 
 ### 7. Wrong vs Correct
 
@@ -101,9 +113,9 @@ const prompt = `${current}\n${quoted}`; // no authority boundary
 ```typescript
 const snapshot = runtimeConfigSource.getSnapshot();
 // Perform existing privacy, mention, and Agent gates first.
-const quoted = await quotedMessageProvider.fetch(relationshipId);
+const quoted = await resolveQuotedMessageChain(quotedMessageProvider, relationshipId, feature.maxDepth);
 const prompt = evaluateContentPrivacy(
-  formatQuotedMessagePrompt(message.text, quoted.text, feature.maxChars),
+  formatQuotedMessageChainPrompt(message.text, quoted.messages, feature.maxChars, feature.includeAttachments),
   privacy
 );
 ```

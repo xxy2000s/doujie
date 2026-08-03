@@ -181,6 +181,8 @@ export type PrivacyGroupRule = {
 export type QuotedMessageFeatureConfig = {
   enabled: boolean;
   maxChars: number;
+  maxDepth: number;
+  includeAttachments: boolean;
 };
 
 export type FeatureConfig = {

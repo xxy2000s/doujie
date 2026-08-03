@@ -15,14 +15,18 @@ import {
   buildCodexCreateArgs,
   buildCodexResumeArgs,
   extractProviderResult,
+  HeadlessAgentRunner,
   type CreateAgentSessionDraft,
   type HeadlessAgentRunnerLike,
+  type HeadlessAgentRuntimeDefaults,
 } from '../src/headless-agent-runner.js';
 import { createCommandRegistry } from '../src/commands/index.js';
 import { Router, type AgentSessionIntentControllerLike, type ReplyClient } from '../src/router.js';
 import { Store } from '../src/store.js';
 import type { AIResult, MessageContent } from '../src/types.js';
 import { createTempDbPath, removeTempDir } from './helpers.js';
+import { buildConfig } from '../src/config.js';
+import { RuntimeConfigManager } from '../src/runtime-config.js';
 
 function message(text: string, messageId = 'msg-1'): MessageContent {
   return {
@@ -144,6 +148,67 @@ test('Codex resume uses supported full-access flags before session id without sh
   assert.equal(args.includes('--sandbox'), false);
 });
 
+test('HeadlessAgentRunner dispatch overrides Codex launch defaults from the request snapshot', async () => {
+  const { dir } = createTempDbPath('doujie-codex-dispatch-defaults');
+  const registry = new AgentSessionRegistryStore(path.join(dir, 'registry.json'));
+  const calls: Array<{ provider: string; args: string[]; cwd: string }> = [];
+  const runner = new HeadlessAgentRunner(registry, {
+    codexSandbox: 'workspace-write', codexSkipGitRepoCheck: false,
+  }, async (provider, args, cwd) => {
+    calls.push({ provider, args, cwd });
+    return { sessionId: null, text: 'ok' };
+  });
+  try {
+    const result = await runner.dispatch({ record: record({ cwd: dir }), prompt: 'continue' }, {
+      model: 'runtime-model', workdir: '/unused-default', sandbox: 'read-only', skipGitRepoCheck: true,
+    });
+    assert.equal(result.record.launch.model, 'runtime-model');
+    assert.equal(result.record.launch.sandbox, 'read-only');
+    assert.equal(result.record.cwd, dir);
+    assert.deepEqual(calls[0], {
+      provider: 'codex', cwd: dir,
+      args: ['exec', 'resume', '--json', '--ignore-user-config', '--sandbox', 'read-only', '--skip-git-repo-check', '--model', 'runtime-model', '019-session', 'continue'],
+    });
+  } finally { removeTempDir(dir); }
+});
+
+test('HeadlessAgentRunner dispatch leaves Claude launch metadata unchanged', async () => {
+  const { dir } = createTempDbPath('doujie-claude-dispatch-defaults');
+  const registry = new AgentSessionRegistryStore(path.join(dir, 'registry.json'));
+  const original = record({
+    provider: 'claude', cwd: dir, nativeSessionId: 'claude-session',
+    launch: { model: 'claude-model', sandbox: '', permissionMode: 'plan', outputFormat: 'json' },
+  });
+  const runner = new HeadlessAgentRunner(registry, {
+    codexSandbox: 'workspace-write', codexSkipGitRepoCheck: false,
+  }, async () => ({ sessionId: null, text: 'ok' }));
+  try {
+    const result = await runner.dispatch({ record: original, prompt: 'continue' }, {
+      model: 'codex-model', workdir: '/unused-default', sandbox: 'danger-full-access', skipGitRepoCheck: true,
+    });
+    assert.deepEqual(result.record.launch, original.launch);
+  } finally { removeTempDir(dir); }
+});
+
+test('HeadlessAgentRunner create does not copy Codex runtime model into Claude registry metadata', async () => {
+  const { dir } = createTempDbPath('doujie-claude-create-defaults');
+  const registry = new AgentSessionRegistryStore(path.join(dir, 'registry.json'));
+  const runner = new HeadlessAgentRunner(registry, {
+    codexSandbox: 'workspace-write', codexSkipGitRepoCheck: false,
+  }, async () => ({ sessionId: 'claude-created', text: 'ok' }));
+  try {
+    const created = await runner.create({
+      provider: 'claude', alias: 'claude-main', cwd: dir, prompt: 'start',
+      createdBy: { chatId: 'oc', senderId: 'ou' },
+    }, {
+      model: 'codex-only-model', workdir: '/unused-default', sandbox: 'danger-full-access', skipGitRepoCheck: true,
+    });
+    assert.equal(created.launch.model, '');
+    assert.equal(created.launch.sandbox, '');
+    assert.equal(created.launch.permissionMode, 'default');
+  } finally { removeTempDir(dir); }
+});
+
 test('provider output parser captures Codex and Claude session ids', () => {
   assert.deepEqual(
     extractProviderResult('codex', [
@@ -162,9 +227,11 @@ test('intent controller stores a pending action and creates after confirmation',
   const { dir } = createTempDbPath('doujie-agent-intent');
   const pending = new PendingAgentActionStore(path.join(dir, 'pending.json'));
   const created: CreateAgentSessionDraft[] = [];
+  const observedDefaults: Array<HeadlessAgentRuntimeDefaults | undefined> = [];
   const runner: HeadlessAgentRunnerLike = {
-    async create(draft: CreateAgentSessionDraft): Promise<AgentSessionRecord> {
+    async create(draft: CreateAgentSessionDraft, defaults): Promise<AgentSessionRecord> {
       created.push(draft);
+      observedDefaults.push(defaults);
       return record({ alias: draft.alias, provider: draft.provider, cwd: draft.cwd });
     },
     async dispatch(): Promise<{ record: AgentSessionRecord; text: string }> {
@@ -173,18 +240,126 @@ test('intent controller stores a pending action and creates after confirmation',
   };
   const controller = new AgentSessionIntentController(runner, pending, () => new Date('2099-07-31T00:00:00.000Z'));
   try {
-    const draftReply = await controller.handle(message('去 /home/doujie/service/doujie 开个 codex session，叫 doujie-main，让它先熟悉项目'));
+    const approvedDefaults: HeadlessAgentRuntimeDefaults = {
+      model: 'approved-model', workdir: '/ignored-default', sandbox: 'read-only', skipGitRepoCheck: false,
+    };
+    const draftReply = await controller.handle(
+      message('去 /home/doujie/service/doujie 开个 codex session，叫 doujie-main，让它先熟悉项目'),
+      approvedDefaults
+    );
     assert.match(draftReply?.text ?? '', /请确认是否创建新的 Agent session/);
     assert.match(draftReply?.text ?? '', /Alias:\*\* `doujie-main`/);
+    assert.match(draftReply?.text ?? '', /Model:\*\* approved-model/);
+    assert.match(draftReply?.text ?? '', /Sandbox:\*\* read-only/);
+    assert.match(draftReply?.text ?? '', /Skip Git Repo Check:\*\* false/);
 
-    const confirmReply = await controller.handle(message('确认', 'msg-2'));
+    const reloadedDefaults: HeadlessAgentRuntimeDefaults = {
+      model: 'request-model',
+      workdir: '/request/default',
+      sandbox: 'danger-full-access',
+      skipGitRepoCheck: true,
+    };
+    const confirmReply = await controller.handle(message('确认', 'msg-2'), reloadedDefaults);
     assert.equal(created.length, 1);
     assert.equal(created[0]?.provider, 'codex');
     assert.equal(created[0]?.createdBy.senderId, 'ou_test');
+    assert.deepEqual(observedDefaults, [{ ...approvedDefaults, workdir: '/home/doujie/service/doujie' }]);
     assert.match(confirmReply?.text ?? '', /已创建并登记 Agent session/);
     assert.equal(pending.get('oc_test', 'ou_test'), null);
   } finally {
     removeTempDir(dir);
+  }
+});
+
+test('pending Agent confirmation remains owned by its sender and owner cancellation stays compatible', async () => {
+  const { dir } = createTempDbPath('doujie-agent-pending-owner');
+  const pending = new PendingAgentActionStore(path.join(dir, 'pending.json'));
+  let creates = 0;
+  const runner: HeadlessAgentRunnerLike = {
+    async create() { creates += 1; return record(); },
+    async dispatch() { throw new Error('dispatch should not run'); },
+  };
+  const controller = new AgentSessionIntentController(runner, pending);
+  try {
+    await controller.handle(message('去 /tmp 开个 codex session，叫 owner-main'));
+    assert.equal(await controller.handle({ ...message('确认', 'other-confirm'), senderId: 'ou_other' }), null);
+    assert.equal(creates, 0);
+    assert.match((await controller.handle(message('取消', 'owner-cancel')))?.text ?? '', /已取消/);
+    assert.equal(await controller.handle(message('确认', 'owner-confirm')), null);
+    assert.equal(creates, 0);
+  } finally { removeTempDir(dir); }
+});
+
+test('Router gives project-Agent operations the request-captured Codex defaults across reload', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-agent-runtime-defaults');
+  const store = new Store(dbPath, () => 2500);
+  const replies: string[] = [];
+  const initial = buildConfig({
+    codex: { model: 'old-model', workdir: '/old-workdir', sandbox: 'read-only', skip_git_repo_check: false },
+  }, {});
+  const candidate = buildConfig({
+    codex: { model: 'new-model', workdir: '/new-workdir', sandbox: 'danger-full-access', skip_git_repo_check: true },
+  }, {});
+  const manager = new RuntimeConfigManager(initial, () => candidate);
+  let releaseFirst!: () => void;
+  const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let firstStarted!: () => void;
+  const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+  const defaults: HeadlessAgentRuntimeDefaults[] = [];
+  const controller: AgentSessionIntentControllerLike = {
+    async handle(_message, runtimeDefaults): Promise<{ text: string }> {
+      assert.ok(runtimeDefaults);
+      defaults.push(runtimeDefaults);
+      if (defaults.length === 1) {
+        firstStarted();
+        await firstBlocked;
+      }
+      return { text: 'agent handled' };
+    },
+  };
+  const replyClient: ReplyClient = {
+    async replyToMessage() { throw new Error('digest should not run'); },
+    async replyError() { throw new Error('error reply should not run'); },
+    async replyText(_messageId, text) { replies.push(text); },
+  };
+  const router = new Router(
+    createCommandRegistry(store),
+    { async process(): Promise<AIResult> { throw new Error('AI should not run'); } },
+    store, new Set<string>(), replyClient, undefined, initial.privacy,
+    null, null, null, undefined, undefined, undefined, null, { ids: [], names: [] }, controller,
+    null, manager
+  );
+  try {
+    const first = router.handleEvent({
+      schema: '2.0',
+      header: { event_id: 'agent-old', event_type: 'im.message.receive_v1', create_time: '1' },
+      event: { message: {
+        message_id: 'agent-old', chat_id: 'private', chat_type: 'p2p',
+        sender: { sender_id: { open_id: 'actor' } }, message_type: 'text',
+        content: JSON.stringify({ text: '创建 codex session' }),
+      } },
+    });
+    await started;
+    await manager.reload('manual');
+    releaseFirst();
+    await first;
+    await router.handleEvent({
+      schema: '2.0',
+      header: { event_id: 'agent-new', event_type: 'im.message.receive_v1', create_time: '2' },
+      event: { message: {
+        message_id: 'agent-new', chat_id: 'private', chat_type: 'p2p',
+        sender: { sender_id: { open_id: 'actor' } }, message_type: 'text',
+        content: JSON.stringify({ text: '创建 codex session' }),
+      } },
+    });
+
+    assert.deepEqual(defaults, [
+      { model: 'old-model', workdir: '/old-workdir', sandbox: 'read-only', skipGitRepoCheck: false },
+      { model: 'new-model', workdir: '/new-workdir', sandbox: 'danger-full-access', skipGitRepoCheck: true },
+    ]);
+    assert.deepEqual(replies, ['agent handled', 'agent handled']);
+  } finally {
+    store.close(); removeTempDir(dir);
   }
 });
 

@@ -38,7 +38,9 @@ test('buildConfig accepts valid YAML and environment overrides', () => {
   assert.equal(config.privacy.privateAllowUserIds, null);
   assert.deepEqual(config.privacy.groups, []);
   assert.equal(config.attachments.ocrCommand, null);
-  assert.deepEqual(config.features.quotedMessage, { enabled: false, maxChars: 20000 });
+  assert.deepEqual(config.features.quotedMessage, {
+    enabled: false, maxChars: 20000, maxDepth: 1, includeAttachments: false,
+  });
   assert.equal(config.output.transport, 'card');
 });
 
@@ -81,6 +83,19 @@ test('buildConfig leaves codex model empty by default', () => {
   assert.match(config.codex.controlSessionDir, /\/\.doujie\/sessions$/);
   assert.deepEqual(config.feishu.botMentionIds, []);
   assert.deepEqual(config.feishu.botMentionNames, []);
+});
+
+test('buildConfig keeps startup compatibility for explicit null optional values', () => {
+  const config = buildConfig({
+    codex: { model: null },
+    privacy: { allow_user_ids: null, admin_user_ids: null },
+    feishu: { edit_polling: { enabled: null, chat_ids: null } },
+  }, {});
+  assert.equal(config.codex.model, '');
+  assert.deepEqual(config.privacy.allowUserIds, []);
+  assert.deepEqual(config.privacy.adminUserIds, []);
+  assert.equal(config.feishu.editPolling.enabled, false);
+  assert.deepEqual(config.feishu.editPolling.chatIds, []);
 });
 
 test('buildConfig accepts bot mention environment lists', () => {
@@ -192,18 +207,20 @@ test('buildConfig rejects invalid privacy regex', () => {
 
 test('buildConfig accepts global and per-group quoted-message settings', () => {
   const config = buildConfig({
-    features: { quoted_message: { enabled: true, max_chars: 16000 } },
+    features: { quoted_message: { enabled: true, max_chars: 16000, max_depth: 4, include_attachments: true } },
     privacy: {
       groups: [{
         chat_id: 'oc_team',
-        features: { quoted_message: { enabled: false, max_chars: 9000 } },
+        features: { quoted_message: { enabled: false, max_chars: 9000, max_depth: 2, include_attachments: false } },
       }],
     },
   }, {});
 
-  assert.deepEqual(config.features.quotedMessage, { enabled: true, maxChars: 16000 });
+  assert.deepEqual(config.features.quotedMessage, {
+    enabled: true, maxChars: 16000, maxDepth: 4, includeAttachments: true,
+  });
   assert.deepEqual(config.privacy.groups?.[0]?.features, {
-    quotedMessage: { enabled: false, maxChars: 9000 },
+    quotedMessage: { enabled: false, maxChars: 9000, maxDepth: 2, includeAttachments: false },
   });
 });
 
@@ -211,6 +228,18 @@ test('buildConfig validates quoted-message object fields and positive limits', (
   assert.throws(
     () => buildConfig({ features: true }, {}),
     /features must be an object/
+  );
+  assert.throws(
+    () => buildConfig({ features: { quoted_message: { max_depth: 0 } } }, {}),
+    /features\.quoted_message\.max_depth must be a positive integer/
+  );
+  assert.throws(
+    () => buildConfig({ features: { quoted_message: { max_depth: 21 } } }, {}),
+    /features\.quoted_message\.max_depth must be at most 20/
+  );
+  assert.throws(
+    () => buildConfig({ features: { quoted_message: { include_attachments: 'sometimes' } } }, {}),
+    /features\.quoted_message\.include_attachments must be a boolean/
   );
   assert.throws(
     () => buildConfig({ features: { quoted_message: true } }, {}),
