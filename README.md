@@ -288,17 +288,11 @@ Expected reply:
 DOUJIE_E2E_OK
 ```
 
-The latest verified smoke tests were:
-
-- `pnpm typecheck`: passed
-- `pnpm test`: 139 passed
-- `pnpm build`: passed
-- Feishu `/status`: returned `Doujie Status` with DB `~/.doujie/data.db`
-- Feishu Codex chat after restart: returned `DOUJIE_AFTER_RESTART_OK`
-- Feishu Agent create flow: structured confirmation returned, `@豆姐 确认` created alias `doujie-e2e-0731a` and wrote `~/.doujie/agent-sessions.json`
+Do not maintain a “latest passed count” in this README. Run the commands above against the current tree and record iteration-specific evidence in the active Trellis task. Runtime changes additionally require the Feishu, launchd, log, and single-listener checks in the operations runbook.
 
 ## Documentation
 
 - [AGENTS.md](./AGENTS.md): rules for AI agents working in this repository.
-- [docs/README.md](./docs/README.md): documentation index grouped by architecture, deployment, and operations.
+- [docs/README.md](./docs/README.md): stable architecture, decisions, deployment, operations, incidents, and security documentation.
+- [Documentation lifecycle](./docs/documentation-lifecycle.md) ([中文](./docs/documentation-lifecycle.zh-CN.md)): where ideas, decisions, incidents, planned work, and Trellis task evidence belong.
 - [backlog/README.md](./backlog/README.md): unresolved product and engineering follow-ups with evidence and acceptance criteria.

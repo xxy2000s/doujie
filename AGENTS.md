@@ -161,5 +161,6 @@ Expected reply is exactly `DOUJIE_E2E_OK`.
 ## Known Follow-Ups
 
 - Add natural-language dispatch/resume to existing project Agent aliases.
-- Headless sessions created by `codex exec` are resumable by native ID but may not appear in the interactive Codex TUI `/resume` picker. See `backlog/codex-headless-tui-resume.zh-CN.md` before changing session creation or discovery behavior.
+- Headless sessions created by `codex exec` are resumable by native ID but may not appear in the interactive Codex TUI `/resume` picker. See `backlog/confirmed-limitations/codex-headless-tui-resume.zh-CN.md` before changing session creation or discovery behavior.
+- Until durable run recovery is delivered, an active Doujie control turn must not restart its own daemon. Follow `docs/operations/runbook.md` and the linked incident procedure.
 - Consider upgrading `lark-cli`; current CLI has reported a newer version is available.

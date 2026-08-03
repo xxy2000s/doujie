@@ -17,8 +17,8 @@ src/
 ├── ai/                        # Codex processes and answer pipelines
 └── web/                       # read-only local HTTP UI and embedded assets
 tests/                         # node:test suites, named after source behavior
-docs/                          # architecture, deployment, and operations
-backlog/                       # evidence-backed unresolved work
+docs/                          # stable architecture, decisions, deployment, operations, incidents, and security
+backlog/confirmed-limitations/ # evidence-backed unresolved work, not implementation specs
 ```
 
 ## Module Organization

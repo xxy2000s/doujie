@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1300" viewBox="0 0 1800 1300">
+  <defs>
+    <style>
+      text { font-family: "Arial Unicode MS", "PingFang SC", sans-serif; fill: #18201d; }
+      .title { font-size: 42px; font-weight: 700; }
+      .subtitle { font-size: 20px; fill: #52605a; }
+      .band-title { font-size: 25px; font-weight: 700; }
+      .stage-title { font-size: 23px; font-weight: 700; }
+      .stage-copy { font-size: 17px; fill: #405049; }
+      .small { font-size: 16px; fill: #52605a; }
+      .map-title { font-size: 22px; font-weight: 700; }
+      .map-copy { font-size: 16px; fill: #405049; }
+      .box { stroke: #aeb9b3; stroke-width: 2; rx: 8; }
+      .arrow { stroke: #607169; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .loop { stroke: #3d7662; stroke-width: 4; fill: none; stroke-dasharray: 10 7; marker-end: url(#arrow-green); }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#607169"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#3d7662"/>
+    </marker>
+  </defs>
+
+  <rect width="1800" height="1300" fill="#f7f8f5"/>
+  <text x="70" y="70" class="title">AI 维护软件的完整生命周期</text>
+  <text x="70" y="108" class="subtitle">从问题发现到退役归档：每一步都有明确产物、验证门禁和人工治理</text>
+
+  <rect x="70" y="145" width="1660" height="110" fill="#dfe9e4" class="box"/>
+  <text x="100" y="185" class="band-title">0. 治理与边界（贯穿全生命周期）</text>
+  <text x="100" y="222" class="stage-copy">使命与责任人　权限与审批　安全与合规　成本预算　AI 自主范围　审计与可追溯性</text>
+
+  <!-- Lifecycle stages -->
+  <rect x="70" y="310" width="290" height="145" fill="#e8eef4" class="box"/>
+  <text x="95" y="350" class="stage-title">1. 发现问题</text>
+  <text x="95" y="385" class="stage-copy">用户、场景、痛点</text>
+  <text x="95" y="414" class="stage-copy">证据、约束、成功信号</text>
+
+  <rect x="425" y="310" width="290" height="145" fill="#edf0dc" class="box"/>
+  <text x="450" y="350" class="stage-title">2. 产品定义</text>
+  <text x="450" y="385" class="stage-copy">愿景、边界、能力地图</text>
+  <text x="450" y="414" class="stage-copy">PRD、指标、验收标准</text>
+
+  <rect x="780" y="310" width="290" height="145" fill="#f3eadb" class="box"/>
+  <text x="805" y="350" class="stage-title">3. 决策与规划</text>
+  <text x="805" y="385" class="stage-copy">Roadmap、优先级、ADR</text>
+  <text x="805" y="414" class="stage-copy">依赖、风险、实施批准</text>
+
+  <path d="M360 382 L420 382" class="arrow"/>
+  <path d="M715 382 L775 382" class="arrow"/>
+
+  <rect x="70" y="510" width="290" height="145" fill="#eee5f1" class="box"/>
+  <text x="95" y="550" class="stage-title">4. 设计</text>
+  <text x="95" y="585" class="stage-copy">架构、接口、数据模型</text>
+  <text x="95" y="614" class="stage-copy">权限、迁移、回滚、测试</text>
+
+  <rect x="425" y="510" width="290" height="145" fill="#e4edf0" class="box"/>
+  <text x="450" y="550" class="stage-title">5. 实现</text>
+  <text x="450" y="585" class="stage-copy">Trellis task、代码、配置</text>
+  <text x="450" y="614" class="stage-copy">Migration、依赖、文档</text>
+
+  <rect x="780" y="510" width="290" height="145" fill="#e5f0e6" class="box"/>
+  <text x="805" y="550" class="stage-title">6. 验证</text>
+  <text x="805" y="585" class="stage-copy">单测、集成、真实 E2E</text>
+  <text x="805" y="614" class="stage-copy">Review、安全、性能、验收</text>
+
+  <path d="M925 455 L925 480 L215 480 L215 505" class="arrow"/>
+  <path d="M360 582 L420 582" class="arrow"/>
+  <path d="M715 582 L775 582" class="arrow"/>
+
+  <rect x="70" y="710" width="290" height="145" fill="#f4e8de" class="box"/>
+  <text x="95" y="750" class="stage-title">7. 发布</text>
+  <text x="95" y="785" class="stage-copy">版本、Changelog、审批</text>
+  <text x="95" y="814" class="stage-copy">备份、灰度、上线、回滚点</text>
+
+  <rect x="425" y="710" width="290" height="145" fill="#e3ebdf" class="box"/>
+  <text x="450" y="750" class="stage-title">8. 运行</text>
+  <text x="450" y="785" class="stage-copy">SLI/SLO、日志、指标、告警</text>
+  <text x="450" y="814" class="stage-copy">容量、成本、备份、恢复</text>
+
+  <rect x="780" y="710" width="290" height="145" fill="#e8e8f3" class="box"/>
+  <text x="805" y="750" class="stage-title">9-10. 学习与演进</text>
+  <text x="805" y="785" class="stage-copy">事故响应、复盘、修复项</text>
+  <text x="805" y="814" class="stage-copy">升级、兼容、技术债、维护</text>
+
+  <path d="M925 655 L925 680 L215 680 L215 705" class="arrow"/>
+  <path d="M360 782 L420 782" class="arrow"/>
+  <path d="M715 782 L775 782" class="arrow"/>
+
+  <rect x="250" y="925" width="640" height="110" fill="#ece8e3" class="box"/>
+  <text x="280" y="968" class="stage-title">11. 弃用与退役</text>
+  <text x="280" y="1005" class="stage-copy">弃用通知　数据导出与删除　凭证撤销　服务下线　归档</text>
+  <path d="M570 855 L570 920" class="arrow"/>
+
+  <path d="M1060 785 C1130 785 1130 285 925 285 C650 285 570 285 570 305" class="loop"/>
+  <rect x="1068" y="465" width="112" height="105" rx="6" fill="#f7f8f5"/>
+  <text x="1125" y="500" text-anchor="middle" class="small">反馈</text>
+  <text x="1125" y="526" text-anchor="middle" class="small">进入下一轮</text>
+  <text x="1125" y="552" text-anchor="middle" class="small">产品与决策</text>
+
+  <!-- Documentation map -->
+  <rect x="1190" y="310" width="540" height="725" fill="#ffffff" class="box"/>
+  <text x="1225" y="355" class="band-title">文档与证据映射</text>
+
+  <text x="1225" y="405" class="map-title">产品与方向</text>
+  <text x="1225" y="435" class="map-copy">README · docs/product · roadmap</text>
+
+  <text x="1225" y="485" class="map-title">长期事实与决策</text>
+  <text x="1225" y="515" class="map-copy">architecture · contracts · ADR</text>
+
+  <text x="1225" y="565" class="map-title">单次迭代</text>
+  <text x="1225" y="595" class="map-copy">.trellis/tasks：PRD → 设计 → 实现 → 验证</text>
+
+  <text x="1225" y="645" class="map-title">质量与发布</text>
+  <text x="1225" y="675" class="map-copy">quality · releases · CHANGELOG</text>
+
+  <text x="1225" y="725" class="map-title">运行与恢复</text>
+  <text x="1225" y="755" class="map-copy">operations · SLO · backup/DR</text>
+
+  <text x="1225" y="805" class="map-title">事故与未完成事项</text>
+  <text x="1225" y="835" class="map-copy">incidents → confirmed-limitations → Trellis</text>
+
+  <text x="1225" y="885" class="map-title">治理与安全</text>
+  <text x="1225" y="915" class="map-copy">security · data · ai-governance · AGENTS</text>
+
+  <text x="1225" y="965" class="map-title">早期想法</text>
+  <text x="1225" y="995" class="map-copy">brainstorm（本地、Git 忽略、确认后晋升）</text>
+
+  <rect x="70" y="1095" width="1660" height="120" fill="#dce7e2" class="box"/>
+  <text x="100" y="1137" class="band-title">横切约束</text>
+  <text x="100" y="1177" class="stage-copy">安全　隐私　数据治理　人工审批　AI 权限　成本　文档　可追溯性　供应链　合规</text>
+
+  <text x="70" y="1260" class="small">原则：AI 的“已完成”不是证据；代码、测试、真实 E2E、运行状态和人工门禁共同构成交付事实。</text>
+</svg>

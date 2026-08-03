@@ -47,6 +47,28 @@ pnpm build
 launchctl kickstart -k gui/$(id -u)/com.doujie.daemon
 ```
 
+### Restart Safety
+
+Until durable run recovery and Guardian are delivered, do not let an active Feishu/Codex control turn restart its own daemon. The process that owns the reply stream cannot reliably report completion after it exits.
+
+Before restart:
+
+1. Check `/status` and confirm whether work is in flight.
+2. Check for active Codex children with `ps` and correlate them with the intended Session/cwd.
+3. Finish or explicitly interrupt active work and make the affected Feishu message terminal.
+4. Build, restart from a separate operator shell, and start a new verification turn.
+
+After restart:
+
+```bash
+launchctl print gui/$(id -u)/com.doujie.daemon
+ps -axo pid,ppid,etime,state,command | rg 'dist/index.js|lark-cli event|codex exec'
+sqlite3 ~/.doujie/data.db \
+  "select status, stage, count(*) from processing_jobs group by status, stage;"
+```
+
+Do not kill by command name alone. Confirm PID, parent, cwd, native Session, and age before treating a process as orphaned. See the [2026-08-01 incident](../incidents/2026-08-01-daemon-restart-orphaned-run.zh-CN.md).
+
 Logs:
 
 ```bash

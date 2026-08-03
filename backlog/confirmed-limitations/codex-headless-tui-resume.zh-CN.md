@@ -1,5 +1,8 @@
 # Codex 无头会话不出现在 TUI `/resume` 中
 
+状态：未交付
+优先级：P1
+
 ## 现象
 
 豆姐通过 `codex exec` 创建并持续恢复的 Codex Session：
