@@ -2,6 +2,12 @@
 
 All notable changes to Doujie are recorded here. Releases follow Semantic Versioning.
 
+## [0.2.2] - 2026-08-04
+
+### Fixed
+
+- Use pnpm's current `allowBuilds` policy map so production installs explicitly authorize the required `better-sqlite3` and `esbuild` lifecycle scripts.
+
 ## [0.2.1] - 2026-08-04
 
 ### Fixed
@@ -31,5 +37,6 @@ All notable changes to Doujie are recorded here. Releases follow Semantic Versio
 - Partial output is retained when cards or Post delivery fail during completion, interruption, or error handling.
 - Long Markdown output uses explicit bounded card tails and complete Post fallback instead of silent truncation.
 
+[0.2.2]: https://github.com/xxy2000s/doujie/releases/tag/v0.2.2
 [0.2.1]: https://github.com/xxy2000s/doujie/releases/tag/v0.2.1
 [0.2.0]: https://github.com/xxy2000s/doujie/releases/tag/v0.2.0

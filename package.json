@@ -1,6 +1,6 @@
 {
   "name": "doujie",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Doujie digital employee and local agent control plane",
   "type": "module",
   "scripts": {
