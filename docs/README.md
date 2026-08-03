@@ -22,6 +22,7 @@ Stable documentation is grouped by purpose. Read [Documentation lifecycle](./doc
 ## Operations
 
 - [Operations runbook](./operations/runbook.md): service, configuration, Session, recovery, and E2E procedures.
+- [Release runbook](./operations/release-runbook.md) ([中文](./operations/release-runbook.zh-CN.md)): versioning, read-only gates, production preflight, publishing, deployment, verification, and rollback.
 
 ## Incidents
 

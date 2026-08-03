@@ -159,6 +159,15 @@ Codex E2E:
 
 Expected reply is exactly `DOUJIE_E2E_OK`.
 
+## Release Workflow
+
+- Read [`docs/operations/release-runbook.md`](docs/operations/release-runbook.md) before changing a version, tag, `release` branch, or production deployment.
+- Run `pnpm release:check -- --version <x.y.z>` on the clean release commit before creating a tag.
+- Use `pnpm release:check -- --phase published --version <x.y.z>` after publishing to verify `master`, `release`, and the tag resolve to one commit.
+- The check script is read-only. It never commits, tags, pushes, installs dependencies, changes branches, or restarts a service.
+- A production-like install/build preflight must pass before an immutable tag is created.
+- Remote push, release promotion, service restart, and rollback require explicit user authorization.
+
 ## Known Follow-Ups
 
 - Add natural-language dispatch/resume to existing project Agent aliases.
