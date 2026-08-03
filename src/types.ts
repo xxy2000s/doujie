@@ -60,6 +60,8 @@ export interface MessageContent {
   mentions: FeishuMention[];
   parentId?: string;
   rootId?: string;
+  /** Platform message/update time used to order competing control turns. */
+  inputTimestamp?: number;
 }
 
 /** Result from AI processing (summary + classification) */
@@ -158,6 +160,7 @@ export type CommandDefinition = {
 
 /** Application configuration */
 export type FeishuIdentity = 'bot' | 'user';
+export type OutputTransport = 'card' | 'post';
 
 export type PrivacyPattern = {
   name: string;
@@ -202,6 +205,9 @@ export interface PrivacyConfig {
 
 export interface AppConfig {
   features: FeatureConfig;
+  output: {
+    transport: OutputTransport;
+  };
   codex: {
     model: string;
     workdir: string;

@@ -5,7 +5,7 @@ const DEFAULT_BEHAVIOR =
   '私聊和群聊 @豆姐 默认进入 Codex 会话；/detail 会显示详细事件；/digest 用于记忆摘要和分类。';
 
 const COMMAND_GROUPS: Array<{ title: string; names: string[] }> = [
-  { title: '会话控制', names: ['new', 'codex', 'detail', 'agent-sessions'] },
+  { title: '会话控制', names: ['new', 'codex', 'detail', 'output', 'agent-sessions'] },
   { title: '记忆检索', names: ['ask', 'search', 'recent'] },
   { title: '消息整理', names: ['save', 'digest', 'skip', 'redo', 'retag', 'merge-tag'] },
   { title: '运行状态', names: ['status', 'reload', 'session', 'sessions', 'errors'] },

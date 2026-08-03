@@ -128,6 +128,12 @@ export function createCommandDefinitions(
       handler: async (): Promise<string> => 'Codex detail mode is handled by the router.',
     },
     {
+      name: 'output',
+      usage: 'output <status|post|card>',
+      description: 'Inspect or hot-switch the Codex output transport',
+      handler: async (): Promise<string> => 'Output transport is handled by the router.',
+    },
+    {
       name: 'reload',
       usage: 'reload',
       description: 'Reload validated runtime feature configuration',

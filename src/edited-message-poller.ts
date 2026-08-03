@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
 import type { FeishuEvent, FeishuIdentity, FeishuMention } from './types.js';
 import type { EventHandler } from './listener.js';
 import { MESSAGE_UPDATED_EVENTS, redactListenerLog } from './listener.js';
@@ -25,6 +26,20 @@ export type FeishuListMessage = {
 };
 
 type ListMessages = (chatId: string) => Promise<FeishuListMessage[]>;
+
+export class Utf8Accumulator {
+  private decoder = new StringDecoder('utf8');
+  private value = '';
+
+  append(chunk: Buffer): void {
+    this.value += this.decoder.write(chunk);
+  }
+
+  finish(): string {
+    this.value += this.decoder.end();
+    return this.value;
+  }
+}
 
 export type EditedMessagePollerOptions = {
   feishuAs: FeishuIdentity;
@@ -197,18 +212,18 @@ async function listChatMessages(
 function spawnLarkCli(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn('lark-cli', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
+    const stdout = new Utf8Accumulator();
+    const stderr = new Utf8Accumulator();
     const timeout = setTimeout(() => {
       proc.kill('SIGTERM');
       reject(new Error('lark-cli chat message list timed out'));
     }, 20000);
 
     proc.stdout?.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString('utf-8');
+      stdout.append(chunk);
     });
     proc.stderr?.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf-8');
+      stderr.append(chunk);
     });
     proc.on('error', (err) => {
       clearTimeout(timeout);
@@ -217,9 +232,9 @@ function spawnLarkCli(args: string[]): Promise<string> {
     proc.on('close', (code) => {
       clearTimeout(timeout);
       if (code === 0) {
-        resolve(stdout);
+        resolve(stdout.finish());
       } else {
-        reject(new Error(stderr.trim() || `lark-cli exited with code ${code}`));
+        reject(new Error(stderr.finish().trim() || `lark-cli exited with code ${code}`));
       }
     });
   });

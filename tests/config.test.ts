@@ -39,6 +39,19 @@ test('buildConfig accepts valid YAML and environment overrides', () => {
   assert.deepEqual(config.privacy.groups, []);
   assert.equal(config.attachments.ocrCommand, null);
   assert.deepEqual(config.features.quotedMessage, { enabled: false, maxChars: 20000 });
+  assert.equal(config.output.transport, 'card');
+});
+
+test('buildConfig accepts output transport and environment precedence', () => {
+  assert.equal(buildConfig({ output: { transport: 'post' } }, {}).output.transport, 'post');
+  assert.equal(
+    buildConfig({ output: { transport: 'post' } }, { DOUJIE_OUTPUT_TRANSPORT: 'card' }).output.transport,
+    'card'
+  );
+  assert.throws(
+    () => buildConfig({ output: { transport: 'text' } }, {}),
+    /output\.transport must be card or post/
+  );
 });
 
 test('buildConfig accepts storage maintenance directories', () => {

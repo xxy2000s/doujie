@@ -9,7 +9,7 @@ Read this first:
 - Runtime shape: a local Node.js daemon managed by launchd.
 - Input: Feishu/Lark IM events from `lark-cli event +subscribe`.
 - Output: Feishu replies and reactions.
-- Agent bridge: normal messages go to Codex chat by default; `/detail` shows verbose Codex events for inspection.
+- Agent bridge: normal messages go to Codex chat by default; `/detail` controls event verbosity and `/output` controls reply transport.
 - Session model: private chats use `chatId:senderId`; group chats use `chatId`; `/new` starts a fresh Codex binding.
 - State: config and runtime data live under `~/.doujie`; build artifacts and local data are not committed.
 - Boundary: Doujie is not a project-specific coding worker. It should control, resume, and dispatch other agents through explicit project/agent metadata.
@@ -33,6 +33,7 @@ Read this first:
 - In private chats, processes messages directly.
 - Defaults normal messages to Codex chat mode.
 - Supports `/detail` for verbose Codex tool/session output.
+- Supports hot-switching between a dynamic status card and segmented Post Markdown output.
 - Adds Feishu reactions for Codex status: thinking, done, error.
 - Tracks per-chat Codex sessions in `~/.doujie/codex-sessions.json`.
 - Maintains a readable session registry and jsonl links in `~/.doujie/sessions/`.
@@ -51,6 +52,7 @@ Feishu commands:
 /agent-sessions [alias]
 /new [prompt]
 /detail <prompt>
+/output status|post|card
 /codex <prompt>
 /ask <question>
 /search <keyword>
@@ -97,6 +99,10 @@ Use `~/.doujie/config.yaml` for runtime config. The `.env.example` file only doc
 Minimal config:
 
 ```yaml
+output:
+  # card updates one interactive card; post sends segmented Markdown replies.
+  transport: card
+
 codex:
   workdir: ~/service/doujie
   sandbox: danger-full-access
@@ -144,6 +150,8 @@ privacy:
         max_messages: 50
         max_chars: 30000
 ```
+
+`/output post` and `/output card` are administrator-only and apply immediately to subsequent turns in the current daemon process. Post mode keeps one lifecycle status card while sending the actual process and result as segmented Markdown messages; Card mode writes the output into the status card itself. `/output status` shows the active transport. To keep a mode across daemon restarts, set `output.transport` in `~/.doujie/config.yaml`; `/reload` hot-applies that field. `DOUJIE_OUTPUT_TRANSPORT` has highest precedence when present.
 
 ### Access Isolation And Group Context
 

@@ -22,13 +22,14 @@ test('RuntimeConfigManager freezes snapshots and resolves group overrides', () =
   }, TypeError);
 });
 
-test('RuntimeConfigManager atomically hot-applies only features and reports restart fields', async () => {
+test('RuntimeConfigManager atomically hot-applies output and features and reports restart fields', async () => {
   const initial = buildConfig({
     codex: { model: 'old-model' },
     features: { quoted_message: { enabled: false, max_chars: 1000 } },
     privacy: { groups: [{ chat_id: 'oc_group', allow_user_ids: ['ou_old'] }] },
   }, {});
   const candidate = buildConfig({
+    output: { transport: 'post' },
     codex: { model: 'new-model' },
     features: { quoted_message: { enabled: true, max_chars: 2000 } },
     privacy: {
@@ -55,11 +56,61 @@ test('RuntimeConfigManager atomically hot-applies only features and reports rest
     restartRequired: ['codex.model', 'privacy.groups'],
   });
   assert.equal(inFlight.config.features.quotedMessage.enabled, false);
+  assert.equal(inFlight.config.output.transport, 'card');
+  assert.equal(applied.config.output.transport, 'post');
   assert.equal(applied.config.features.quotedMessage.enabled, true);
   assert.equal(applied.config.codex.model, 'old-model');
   assert.deepEqual(applied.config.privacy.groups?.[0]?.allowUserIds, ['ou_old']);
   assert.deepEqual(resolveQuotedMessageFeature(applied, 'oc_group'), { enabled: true, maxChars: 700 });
   assert.equal(applied.loadedAt, 300);
+});
+
+test('RuntimeConfigManager hot-switches output transport without mutating captured snapshots', () => {
+  let now = 400;
+  const config = buildConfig({}, {});
+  const manager = new RuntimeConfigManager(config, () => config, () => now);
+  const before = manager.getSnapshot();
+
+  now = 500;
+  const after = manager.setOutputTransport('post');
+
+  assert.equal(before.config.output.transport, 'card');
+  assert.equal(after.config.output.transport, 'post');
+  assert.equal(after.version, 2);
+  assert.equal(after.loadedAt, 500);
+  assert.equal(manager.setOutputTransport('post'), after);
+});
+
+test('RuntimeConfigManager preserves a later output switch while an earlier reload is loading', async () => {
+  const initial = buildConfig({
+    output: { transport: 'card' },
+    features: { quoted_message: { enabled: false } },
+  }, {});
+  const candidate = buildConfig({
+    output: { transport: 'card' },
+    features: { quoted_message: { enabled: true } },
+  }, {});
+  let resolveLoad!: (config: typeof candidate) => void;
+  const loading = new Promise<typeof candidate>((resolve) => { resolveLoad = resolve; });
+  const manager = new RuntimeConfigManager(initial, () => loading);
+
+  const reload = manager.reload();
+  await Promise.resolve();
+  const switched = manager.setOutputTransport('post');
+  resolveLoad(candidate);
+  const result = await reload;
+
+  assert.equal(switched.version, 2);
+  assert.equal(manager.getSnapshot().version, 3);
+  assert.equal(manager.getSnapshot().config.output.transport, 'post');
+  assert.equal(manager.getSnapshot().config.features.quotedMessage.enabled, true);
+  assert.deepEqual(result, {
+    ok: true,
+    previousVersion: 1,
+    version: 3,
+    changed: true,
+    restartRequired: [],
+  });
 });
 
 test('RuntimeConfigManager preserves snapshot and version on invalid or restart-only reload', async () => {

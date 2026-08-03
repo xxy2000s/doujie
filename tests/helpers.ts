@@ -23,6 +23,7 @@ export function textEvent(params: {
   parentId?: string;
   replyTo?: string;
   rootId?: string;
+  createTime?: string;
 }): FeishuEvent {
   const sender = { sender_id: { open_id: params.senderId ?? 'ou_test' } };
   return {
@@ -30,7 +31,7 @@ export function textEvent(params: {
     header: {
       event_id: `event-${params.messageId}`,
       event_type: 'im.message.receive_v1',
-      create_time: '1783530000000',
+      create_time: params.createTime ?? '1783530000000',
     },
     event: {
       ...(params.senderAtEventRoot ? { sender } : {}),

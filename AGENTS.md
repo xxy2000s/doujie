@@ -65,6 +65,7 @@ This repository is initialized with Trellis for development workflow support onl
 Important variables:
 
 ```text
+DOUJIE_OUTPUT_TRANSPORT
 CODEX_MODEL
 DOUJIE_CODEX_WORKDIR
 DOUJIE_CODEX_SANDBOX

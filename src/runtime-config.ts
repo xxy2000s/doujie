@@ -1,5 +1,6 @@
 import type {
   AppConfig,
+  OutputTransport,
   PrivacyGroupRule,
   QuotedMessageFeatureConfig,
 } from './types.js';
@@ -31,6 +32,7 @@ export type RuntimeConfigLoader = () => AppConfig | Promise<AppConfig>;
 
 export interface RuntimeConfigSource {
   getSnapshot(): RuntimeConfigSnapshot;
+  setOutputTransport?(transport: OutputTransport): RuntimeConfigSnapshot;
 }
 
 export class RuntimeConfigManager implements RuntimeConfigSource {
@@ -46,6 +48,14 @@ export class RuntimeConfigManager implements RuntimeConfigSource {
   }
 
   getSnapshot(): RuntimeConfigSnapshot {
+    return this.snapshot;
+  }
+
+  setOutputTransport(transport: OutputTransport): RuntimeConfigSnapshot {
+    if (this.snapshot.config.output.transport === transport) return this.snapshot;
+    const next = structuredClone(this.snapshot.config) as AppConfig;
+    next.output.transport = transport;
+    this.snapshot = createSnapshot(next, this.snapshot.version + 1, this.clock());
     return this.snapshot;
   }
 
@@ -74,13 +84,18 @@ export class RuntimeConfigManager implements RuntimeConfigSource {
       };
     }
 
-    const restartRequired = findRestartRequiredPaths(previous.config, candidate);
-    const applied = mergeReloadableConfig(previous.config, candidate);
-    const changed = !valuesEqual(previous.config.features, applied.features) ||
-      !valuesEqual(groupFeatureProjection(previous.config.privacy.groups), groupFeatureProjection(applied.privacy.groups));
+    const current = this.snapshot;
+    const restartRequired = findRestartRequiredPaths(current.config, candidate);
+    const applied = mergeReloadableConfig(current.config, candidate);
+    if (!valuesEqual(previous.config.output, current.config.output)) {
+      applied.output = structuredClone(current.config.output) as AppConfig['output'];
+    }
+    const changed = !valuesEqual(current.config.output, applied.output) ||
+      !valuesEqual(current.config.features, applied.features) ||
+      !valuesEqual(groupFeatureProjection(current.config.privacy.groups), groupFeatureProjection(applied.privacy.groups));
 
     if (changed) {
-      this.snapshot = createSnapshot(applied, previous.version + 1, this.clock());
+      this.snapshot = createSnapshot(applied, current.version + 1, this.clock());
     }
 
     return {
@@ -113,6 +128,7 @@ function createSnapshot(config: AppConfig, version: number, loadedAt: number): R
 
 function mergeReloadableConfig(current: DeepReadonly<AppConfig>, candidate: AppConfig): AppConfig {
   const applied = structuredClone(current) as AppConfig;
+  applied.output = structuredClone(candidate.output);
   applied.features = structuredClone(candidate.features);
   applied.privacy.groups = applied.privacy.groups?.map((group) => {
     const candidateGroup = candidate.privacy.groups?.find((item) => item.chatId === group.chatId);
