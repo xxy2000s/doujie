@@ -71,11 +71,11 @@ import {
 } from './quoted-message.js';
 
 type AIPipelineLike = {
-  process(text: string): Promise<AIResult>;
+  process(text: string, model?: string): Promise<AIResult>;
 };
 
 type AnswerPipelineLike = {
-  answer(text: string): Promise<AnswerResult>;
+  answer(text: string, model?: string): Promise<AnswerResult>;
 };
 
 export type CodexChatRunnerLike = {
@@ -1000,7 +1000,10 @@ export class Router {
     }
 
     this.store.markProcessing(message.messageId, 'ask_codex');
-    const result = await this.answerPipeline.answer(prompt);
+    const result = await this.answerPipeline.answer(
+      prompt,
+      runtimeSnapshot?.config.codex.model
+    );
     this.store.markProcessing(message.messageId, 'reply');
     await this.replyClient.replyText(message.messageId, formatAskAnswer(question, result, evidence));
     this.store.markReplied(message.messageId);
@@ -1622,7 +1625,10 @@ export class Router {
     }
 
     this.store.markProcessing(message.messageId, 'codex');
-    const aiResult = await this.aiPipeline.process(textForAI);
+    const aiResult = await this.aiPipeline.process(
+      textForAI,
+      runtimeSnapshot?.config.codex.model
+    );
 
     // Store processed result
     this.store.markProcessing(message.messageId, 'store_processed');

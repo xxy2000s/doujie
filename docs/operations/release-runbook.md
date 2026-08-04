@@ -44,6 +44,10 @@ The clean release commit must pass:
 pnpm release:check -- --version X.Y.Z
 ```
 
+This is a non-publishing gate: it does not install dependencies, change tracked
+files or Git refs, push, switch branches, or restart a service. Its build phase
+may refresh ignored `dist/` output.
+
 Optional read-only server environment inspection:
 
 ```bash

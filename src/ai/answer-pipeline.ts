@@ -21,8 +21,8 @@ export class AnswerPipeline {
     this.processor = options.processor ?? processAnswerWithCodex;
   }
 
-  async answer(text: string): Promise<AnswerResult> {
+  async answer(text: string, model: string = this.model): Promise<AnswerResult> {
     const governedText = truncateForCodex(text, this.maxInputChars);
-    return this.processor(governedText, this.model);
+    return this.processor(governedText, model);
   }
 }

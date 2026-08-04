@@ -164,7 +164,7 @@ Expected reply is exactly `DOUJIE_E2E_OK`.
 - Read [`docs/operations/release-runbook.md`](docs/operations/release-runbook.md) before changing a version, tag, `release` branch, or production deployment.
 - Run `pnpm release:check -- --version <x.y.z>` on the clean release commit before creating a tag.
 - Use `pnpm release:check -- --phase published --version <x.y.z>` after publishing to verify `master`, `release`, and the tag resolve to one commit.
-- The check script is read-only. It never commits, tags, pushes, installs dependencies, changes branches, or restarts a service.
+- The check script is non-publishing. It never commits, tags, pushes, installs dependencies, changes tracked files or branches, or restarts a service; its build gate may refresh ignored `dist/` output.
 - A production-like install/build preflight must pass before an immutable tag is created.
 - Remote push, release promotion, service restart, and rollback require explicit user authorization.
 

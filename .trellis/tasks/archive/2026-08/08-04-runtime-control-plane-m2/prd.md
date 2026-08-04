@@ -63,22 +63,22 @@ multi-level quoted-message context.
 
 ## Acceptance Criteria
 
-- [ ] M1 commands are authorization-gated, scoped, redacted, and covered by tests.
-- [ ] M2 automatically applies a valid change once, retains the old snapshot on
+- [x] M1 commands are authorization-gated, scoped, redacted, and covered by tests.
+- [x] M2 automatically applies a valid change once, retains the old snapshot on
       invalid/transient writes, and never runs two edited-message poll loops.
-- [ ] M2 proves a running request keeps its old snapshot while the next request
+- [x] M2 proves a running request keeps its old snapshot while the next request
       sees the new routing, privacy, Codex, output, and feature values.
-- [ ] M3 traverses bounded chains, detects cycles/duplicates, supports configured
+- [x] M3 traverses bounded chains, detects cycles/duplicates, supports configured
       rendered message kinds and attachment metadata, and degrades safely.
-- [ ] Existing single-level quoted-message and manual `/reload` behavior remains
+- [x] Existing single-level quoted-message and manual `/reload` behavior remains
       backward compatible.
-- [ ] `pnpm typecheck`, `pnpm test`, and `pnpm build` pass after every milestone.
-- [ ] Runtime verification shows one launchd listener and no leaked watcher or
+- [x] `pnpm typecheck`, `pnpm test`, and `pnpm build` pass after every milestone.
+- [x] Runtime verification shows one launchd listener and no leaked watcher or
       poller after daemon restart.
-- [ ] Real Feishu E2E in the local `包` group verifies `/features`, automatic
+- [x] Real Feishu E2E in the local `包` group verifies `/features`, automatic
       reload, poller lifecycle, one multi-level reply chain, and current-only
       degradation. Any config used for E2E is restored after testing.
-- [ ] Final diff and logs contain no credentials or complete identity values.
+- [x] Final diff and logs contain no credentials or complete identity values.
 
 ## Notes
 

@@ -196,15 +196,18 @@ function createAttachmentExtractor(text: string): AttachmentExtractor {
 
 type FakeAnswerPipeline = {
   prompts: string[];
-  pipeline: { answer(text: string): Promise<AnswerResult> };
+  models: Array<string | undefined>;
+  pipeline: { answer(text: string, model?: string): Promise<AnswerResult> };
 };
 
 function createFakeAnswerPipeline(result: AnswerResult): FakeAnswerPipeline {
   const fake: FakeAnswerPipeline = {
     prompts: [],
+    models: [],
     pipeline: {
-      async answer(text: string): Promise<AnswerResult> {
+      async answer(text: string, model?: string): Promise<AnswerResult> {
         fake.prompts.push(text);
+        fake.models.push(model);
         return result;
       },
     },
@@ -3760,6 +3763,44 @@ test('Router keeps in-flight privacy and Codex defaults while the next request s
     assert.equal(options[1]?.sandbox, 'danger-full-access');
     assert.equal(options[1]?.skipGitRepoCheck, true);
     assert.equal(options.length, 2);
+  } finally {
+    store.close(); removeTempDir(dir);
+  }
+});
+
+test('Router applies request snapshot models to digest and ask after reload', async () => {
+  const { dir, dbPath } = createTempDbPath('doujie-router-pipeline-model-reload');
+  const store = new Store(dbPath, () => 19460, { disableFts: true });
+  const reply = createFakeReply();
+  const initial = buildConfig({ codex: { model: 'model-old' } }, {});
+  const candidate = buildConfig({ codex: { model: 'model-new' } }, {});
+  const manager = new RuntimeConfigManager(initial, () => candidate);
+  const digestModels: Array<string | undefined> = [];
+  const answer = createFakeAnswerPipeline({ answer: 'answer', citations: ['model-evidence'] });
+  const router = new Router(
+    createCommandRegistry(store),
+    {
+      async process(_text, model): Promise<AIResult> {
+        digestModels.push(model);
+        return aiResult({ summary: 'digest', tags: [] });
+      },
+    },
+    store, new Set<string>(), withoutStatusCards(reply.client), createFakeUrlFetcher(''), initial.privacy,
+    null, null, answer.pipeline, undefined, undefined, 'digest', null,
+    { ids: [], names: [] }, null, null, manager
+  );
+  try {
+    await router.handleEvent(textEvent({ messageId: 'model-digest-old', text: 'first digest' }));
+    await manager.reload('manual');
+    await router.handleEvent(textEvent({ messageId: 'model-digest-new', text: 'second digest' }));
+    store.saveMessage({
+      id: 'model-evidence', chatId: 'chat-1', senderId: 'sender-1',
+      content: 'model evidence', messageType: 'text', rawEvent: '{}',
+    });
+    await router.handleEvent(textEvent({ messageId: 'model-ask-new', text: '/ask model evidence' }));
+
+    assert.deepEqual(digestModels, ['model-old', 'model-new']);
+    assert.deepEqual(answer.models, ['model-new']);
   } finally {
     store.close(); removeTempDir(dir);
   }

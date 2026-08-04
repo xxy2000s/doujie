@@ -58,6 +58,26 @@ test('AIPipeline starts queued calls in FIFO order', async () => {
   assert.deepEqual(results.map((result) => result.summary), ['first', 'second', 'third']);
 });
 
+test('AIPipeline captures a request model while the job is queued', async () => {
+  let releaseFirst!: () => void;
+  const firstCanFinish = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const models: string[] = [];
+  const processor: AIProcessor = async (text, model) => {
+    models.push(model);
+    if (text === 'first') await firstCanFinish;
+    return aiResult({ summary: text, tags: [] });
+  };
+  const pipeline = new AIPipeline('startup-model', { maxConcurrency: 1, processor });
+
+  const first = pipeline.process('first', 'request-model-1');
+  const second = pipeline.process('second', 'request-model-2');
+  await Promise.resolve();
+  releaseFirst();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(models, ['request-model-1', 'request-model-2']);
+});
+
 test('truncateForCodex caps long input with a visible marker', () => {
   const result = truncateForCodex('x'.repeat(100), 40);
 
@@ -121,4 +141,19 @@ test('AnswerPipeline truncates Q&A input before processing', async () => {
 
   assert.equal(processedText.length, 40);
   assert.ok(processedText.endsWith(INPUT_TRUNCATED_MARKER));
+});
+
+test('AnswerPipeline uses a request model override and keeps the startup fallback', async () => {
+  const models: string[] = [];
+  const pipeline = new AnswerPipeline('startup-model', {
+    processor: async (_text, model) => {
+      models.push(model);
+      return { answer: 'ok', citations: [] };
+    },
+  });
+
+  await pipeline.answer('first', 'request-model');
+  await pipeline.answer('second');
+
+  assert.deepEqual(models, ['request-model', 'startup-model']);
 });

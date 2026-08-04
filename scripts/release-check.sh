@@ -9,8 +9,9 @@ usage() {
   cat <<'EOF'
 Usage: scripts/release-check.sh [--phase prepare|published] [--version X.Y.Z] [--remote SSH_HOST]
 
-Read-only release gate. It does not install, commit, tag, push, switch branches,
-change files, or restart services.
+Non-publishing release gate. It does not install, commit, tag, push, switch
+branches, change tracked files, or restart services. The build quality gate may
+refresh ignored dist/ output.
 EOF
 }
 

@@ -9,6 +9,7 @@ export type AIProcessor = (text: string, model: string) => Promise<AIResult>;
 
 type QueueJob = {
   text: string;
+  model: string;
   resolve(result: AIResult): void;
   reject(error: unknown): void;
 };
@@ -48,10 +49,10 @@ export class AIPipeline {
     this.processor = options.processor ?? processWithCodexRetry;
   }
 
-  async process(text: string): Promise<AIResult> {
+  async process(text: string, model: string = this.model): Promise<AIResult> {
     const governedText = truncateForCodex(text, this.maxInputChars);
     return new Promise<AIResult>((resolve, reject) => {
-      this.queue.push({ text: governedText, resolve, reject });
+      this.queue.push({ text: governedText, model, resolve, reject });
       this.drainQueue();
     });
   }
@@ -68,7 +69,7 @@ export class AIPipeline {
   private async runJob(job: QueueJob): Promise<void> {
     try {
       console.log('[ai] Starting pipeline for text length:', job.text.length);
-      const result = await this.processor(job.text, this.model);
+      const result = await this.processor(job.text, job.model);
       console.log('[ai] Pipeline complete. Tags:', result.tags);
       job.resolve(result);
     } catch (err) {

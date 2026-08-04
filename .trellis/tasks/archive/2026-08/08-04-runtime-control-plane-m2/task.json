@@ -15,7 +15,7 @@
   "branch": "feature/runtime-control-plane-m2",
   "base_branch": "master",
   "worktree_path": null,
-  "commit": null,
+  "commit": "e502e38",
   "pr_url": null,
   "subtasks": [],
   "children": [],
